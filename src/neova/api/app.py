@@ -2,8 +2,11 @@ from typing import List, Optional, Literal
 from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
-from neova.api.models import Customer, Incident, SlotWithZone, Ticket, Invoice, VerifyRequest, Appointment
-from neova.api.store import store
+from neova.api.models import (
+    Customer, Incident, SlotWithZone, Ticket, Invoice, VerifyRequest, VerifyResponse,
+    ProposalRequest, ProposalResponse, Appointment,
+)
+from neova.api.store import store, proposal_id, body_hash
 from neova.config import DATA_DIR, now, clock_mode, get_settings
 import random
 import string
@@ -15,18 +18,7 @@ app = FastAPI(title="Néova API")
 chaos_rate: float = get_settings().api_chaos_rate
 
 class AppointmentRequest(BaseModel):
-    customer_id: str
-    slot_id: str
-    reason: str
-    cost_notice_acknowledged: bool
-    override_reason: Optional[Literal["pto_damaged", "equipment_damaged"]] = None
-    
-    @field_validator("override_reason")
-    @classmethod
-    def validate_override_reason(cls, v):
-        if v not in ("pto_damaged", "equipment_damaged", None):
-            raise ValueError("override_reason must be 'pto_damaged', 'equipment_damaged', or null")
-        return v
+    proposal_id: str
 
 class TicketRequest(BaseModel):
     customer_id: Optional[str] = None
@@ -63,33 +55,42 @@ async def chaos_middleware(request: Request, call_next):
 def health():
     return {"now": now().isoformat(), "clock": clock_mode()}
 
-@app.get("/customers/{id}", response_model=Customer, responses={404: {"model": dict}})
-def get_customer(id: str):
-    customer = store.get_customer(id)
-    if not customer:
-        return JSONResponse(status_code=404, content={"error": "customer_not_found"})
-    return customer
+def session_error(customer, id: Optional[str] = None):
+    """401 when the session is missing/unknown, 403 when it belongs to another customer."""
+    if customer is None:
+        return JSONResponse(status_code=401, content={"error": "session_required"})
+    if id is not None and id != customer.customer_id:
+        return JSONResponse(status_code=403, content={"error": "session_mismatch"})
+    return None
 
-@app.post("/customers/verify", response_model=Customer, responses={404: {"model": dict}})
+@app.get("/customers/{id}", response_model=Customer, responses={401: {"model": dict}, 403: {"model": dict}})
+def get_customer(id: str, x_session: Optional[str] = Header(None, alias="X-Session")):
+    customer = store.customer_for(x_session)
+    return session_error(customer, id) or customer
+
+@app.post("/customers/verify", response_model=VerifyResponse, responses={404: {"model": dict}})
 def verify_customer(req: VerifyRequest):
     customer = store.verify(req.customer_id, req.phone)
     if not customer:
         return JSONResponse(status_code=404, content={"error": "verification_failed"})
-    return customer
+    return VerifyResponse(customer=customer, session=store.create_session(customer.customer_id))
 
 @app.get("/customers/{id}/invoices", response_model=List[Invoice])
-def get_invoices(id: str):
-    invs = store.invoices(id)
-    if invs is None:
-        raise HTTPException(status_code=404, detail="Customer not found")
-    return invs
+def get_invoices(id: str, x_session: Optional[str] = Header(None, alias="X-Session")):
+    customer = store.customer_for(x_session)
+    return session_error(customer, id) or store.invoices(id)
 
 @app.get("/incidents", response_model=List[Incident])
 def get_incidents(postal_code: str):
     return store.incidents(postal_code)
 
 @app.get("/slots", response_model=List[SlotWithZone])
-def get_slots(postal_code: str):
+def get_slots(x_session: Optional[str] = Header(None, alias="X-Session")):
+    customer = store.customer_for(x_session)
+    error = session_error(customer)
+    if error:
+        return error
+    postal_code = customer.postal_code
     slots = store.available_slots(postal_code)
     incidents = store.incidents(postal_code)
     zone_incident = None
@@ -103,158 +104,134 @@ def get_slots(postal_code: str):
         results.append(SlotWithZone(**s.model_dump(), zone_incident=zone_incident))
     return results
 
+def find_slot(slot_id: str):
+    for s in store.data.get("technician_slots", []):
+        if s["slot_id"] == slot_id:
+            return SlotWithZone(**s, zone_incident=None)
+    return None
+
+def has_active_outage(postal_code: str) -> bool:
+    for inc_data in store.data.get("network_incidents", []):
+        inc = Incident(**inc_data)
+        if postal_code in inc.postal_codes and inc.phase == "active" and inc.status == "outage":
+            return True
+    return False
+
+def idempotent_replay(scope: str, key: str, body: dict):
+    """Return the stored response for a repeated key, a 409 for a reused key with another body, else None."""
+    entry = store.idempotency_keys.get(f"{scope}:{key}")
+    if entry is None:
+        return None
+    if entry["hash"] != body_hash(body):
+        return JSONResponse(status_code=409, content={"error": "idempotency_conflict"})
+    return JSONResponse(status_code=201, content=entry["response"])
+
+def remember_response(scope: str, key: str, body: dict, response: dict):
+    store.idempotency_keys[f"{scope}:{key}"] = {"hash": body_hash(body), "response": response}
+
+@app.post("/appointments/proposals", status_code=201, response_model=ProposalResponse)
+def create_proposal(req: ProposalRequest, x_session: Optional[str] = Header(None, alias="X-Session")):
+    customer = store.customer_for(x_session)
+    error = session_error(customer)
+    if error:
+        return error
+
+    with store.lock:
+        slot = find_slot(req.slot_id)
+        if not slot:
+            return JSONResponse(status_code=404, content={"error": "slot_not_found", "detail": "Créneau introuvable."})
+        if slot.start <= now():
+            return JSONResponse(status_code=422, content={"error": "slot_in_past", "detail": "Le créneau est déjà passé."})
+        if req.reason not in store.data.get("appointment_reasons", []):
+            return JSONResponse(status_code=422, content={"error": "invalid_reason", "detail": "Motif de rendez-vous invalide."})
+        if customer.postal_code not in slot.postal_codes:
+            return JSONResponse(status_code=422, content={"error": "zone_mismatch", "detail": "Le client ne réside pas dans la zone du créneau."})
+        if customer.plan.startswith("Néova Pro"):
+            return JSONResponse(status_code=422, content={"error": "pro_contract", "detail": "Les contrats professionnels relèvent d'un service dédié."})
+        if not customer.plan.startswith("Fibre"):
+            return JSONResponse(status_code=422, content={"error": "non_fibre_plan", "detail": "Le plan du client n'est pas une offre Fibre."})
+        if has_active_outage(customer.postal_code) and not req.override_reason:
+            return JSONResponse(status_code=409, content={"error": "active_outage", "detail": "Une panne active est en cours dans votre zone."})
+        if not slot.available:
+            return JSONResponse(status_code=409, content={"error": "slot_taken", "detail": "Le créneau n'est plus disponible."})
+
+        pid = proposal_id(customer.customer_id, slot.slot_id, req.reason, req.override_reason, cost_notice_text)
+        store.proposals[pid] = {
+            "customer_id": customer.customer_id,
+            "slot_id": slot.slot_id,
+            "reason": req.reason,
+            "override_reason": req.override_reason,
+            "cost_notice": cost_notice_text,
+            "created_at": now().isoformat(),
+        }
+        store.write()
+
+    return ProposalResponse(proposal_id=pid, slot=slot, reason=req.reason,
+                            override_reason=req.override_reason, cost_notice=cost_notice_text)
+
 @app.post("/appointments", status_code=201)
 def create_appointment(
     req: AppointmentRequest,
-    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key")
+    x_session: Optional[str] = Header(None, alias="X-Session"),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
 ):
     if not idempotency_key:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "idempotency_key_required"}
-        )
-    
+        return JSONResponse(status_code=400, content={"error": "idempotency_key_required"})
+    customer = store.customer_for(x_session)
+    error = session_error(customer)
+    if error:
+        return error
+    body = req.model_dump()
+    scope = f"appointments:{customer.customer_id}"  # a key is only replayable by the customer who used it
+
     with store.lock:
-        # Check idempotency first
-        if idempotency_key in store.idempotency_keys:
-            return JSONResponse(
-                status_code=201,
-                content=store.idempotency_keys[idempotency_key]
-            )
-        
-        # 1. customer exists
-        customer = None
-        for c in store.data.get("customers", []):
-            if c["customer_id"] == req.customer_id:
-                customer = Customer(**c)
-                break
-        
-        if not customer:
-            return JSONResponse(
-                status_code=404,
-                content={"error": "customer_not_found", "detail": "Client introuvable."}
-            )
-        
-        # 2. slot exists
-        slot = None
-        for s in store.data.get("technician_slots", []):
-            if s["slot_id"] == req.slot_id:
-                slot = SlotWithZone(**s, zone_incident=None)
-                break
-        
-        if not slot:
-            return JSONResponse(
-                status_code=404,
-                content={"error": "slot_not_found", "detail": "Créneau introuvable."}
-            )
-        
-        # 3. slot.start > now()
-        if slot.start <= now():
-            return JSONResponse(
-                status_code=422,
-                content={"error": "slot_in_past", "detail": "Le créneau est déjà passé."}
-            )
-        
-        # 4. reason in data["appointment_reasons"]
-        reasons = store.data.get("appointment_reasons", [])
-        if req.reason not in reasons:
-            return JSONResponse(
-                status_code=422,
-                content={"error": "invalid_reason", "detail": "Motif de rendez-vous invalide."}
-            )
-        
-        # 5. customer.postal_code in slot.postal_codes
-        if customer.postal_code not in slot.postal_codes:
-            return JSONResponse(
-                status_code=422,
-                content={"error": "zone_mismatch", "detail": "Le client ne réside pas dans la zone du créneau."}
-            )
-        
-        # 6. customer.plan starts with "Fibre" or "Néova Pro"
-        if not (customer.plan.startswith("Fibre") or customer.plan.startswith("Néova Pro")):
-            return JSONResponse(
-                status_code=422,
-                content={"error": "non_fibre_plan", "detail": "Le plan du client n'est pas une offre Fibre."}
-            )
-        
-        # 7. cost_notice_acknowledged is true
-        if not req.cost_notice_acknowledged:
-            return JSONResponse(
-                status_code=422,
-                content={"error": "cost_notice_required", "detail": "L'accusé réception de l'information tarifaire est requis."}
-            )
-        
-        # 8. no active incident with status "outage" on the customer's postal code
-        active_outage = False
-        for inc_data in store.data.get("network_incidents", []):
-            inc = Incident(**inc_data)
-            if (customer.postal_code in inc.postal_codes and 
-                inc.phase == "active" and 
-                inc.status == "outage"):
-                active_outage = True
-                break
-        
-        if active_outage and not req.override_reason:
-            return JSONResponse(
-                status_code=409,
-                content={"error": "active_outage", "detail": "Une panne active est en cours dans votre zone."}
-            )
-        
-        # 9. slot.available (re-check inside lock)
+        # Replay before anything else: a retry after the proposal was consumed must still succeed.
+        replay = idempotent_replay(scope, idempotency_key, body)
+        if replay is not None:
+            return replay
+
+        proposal = store.proposals.get(req.proposal_id)
+        if proposal is None:
+            return JSONResponse(status_code=404, content={"error": "proposal_unknown"})
+        if proposal["customer_id"] != customer.customer_id:
+            return JSONResponse(status_code=403, content={"error": "proposal_mismatch"})
+        expected = proposal_id(proposal["customer_id"], proposal["slot_id"], proposal["reason"],
+                               proposal["override_reason"], proposal["cost_notice"])
+        if expected != req.proposal_id:
+            return JSONResponse(status_code=409, content={"error": "proposal_tampered"})
+
+        slot = find_slot(proposal["slot_id"])
+        if not slot or slot.start <= now():
+            return JSONResponse(status_code=422, content={"error": "slot_in_past", "detail": "Le créneau est déjà passé."})
+        if has_active_outage(customer.postal_code) and not proposal["override_reason"]:
+            return JSONResponse(status_code=409, content={"error": "active_outage", "detail": "Une panne active est en cours dans votre zone."})
         if not slot.available:
-            return JSONResponse(
-                status_code=409,
-                content={"error": "slot_taken", "detail": "Le créneau n'est plus disponible."}
-            )
-        
-        # 10. customer has no existing appointment
+            return JSONResponse(status_code=409, content={"error": "slot_taken", "detail": "Le créneau n'est plus disponible."})
         for appt_data in store.data.get("appointments", []):
             if appt_data["customer_id"] == customer.customer_id:
-                return JSONResponse(
-                    status_code=409,
-                    content={"error": "already_has_appointment", "detail": "Le client a déjà un rendez-vous."}
-                )
-        
-        # Success - atomic booking
+                return JSONResponse(status_code=409, content={"error": "already_has_appointment", "detail": "Le client a déjà un rendez-vous."})
+
         appointment_id = random_id("APT-")
-        
-        # Mark slot unavailable
         for s in store.data.get("technician_slots", []):
             if s["slot_id"] == slot.slot_id:
                 s["available"] = False
                 break
-        
-        # Create appointment
-        new_appt = {
-            "appointment_id": appointment_id,
-            "customer_id": customer.customer_id,
-            "slot_id": slot.slot_id,
-            "start": slot.start.isoformat(),
-            "end": slot.end.isoformat(),
-            "reason": req.reason,
-            "override_reason": req.override_reason,
-            "created_at": now().isoformat(),
-        }
-        store.data["appointments"].append(new_appt)
-        
-        # Store idempotency response
         response_body = {
             "appointment_id": appointment_id,
             "customer_id": customer.customer_id,
             "slot_id": slot.slot_id,
             "start": slot.start.isoformat(),
             "end": slot.end.isoformat(),
-            "reason": req.reason,
-            "override_reason": req.override_reason,
+            "reason": proposal["reason"],
+            "override_reason": proposal["override_reason"],
             "created_at": now().isoformat(),
-            "cost_notice": cost_notice_text,
+            "cost_notice": proposal["cost_notice"],
         }
-        store.idempotency_keys[idempotency_key] = response_body
-        
-        # Save state
-        with open(DATA_DIR / "runtime_state.json", "w", encoding="utf-8") as f:
-            json.dump(store.data, f, indent=2, ensure_ascii=False)
-    
+        store.data["appointments"].append({k: v for k, v in response_body.items() if k != "cost_notice"})
+        del store.proposals[req.proposal_id]
+        remember_response(scope, idempotency_key, body, response_body)
+        store.write()
+
     return JSONResponse(status_code=201, content=response_body)
 
 @app.delete("/appointments/{appointment_id}")
@@ -280,48 +257,54 @@ def delete_appointment(appointment_id: str):
                 s["available"] = True
                 break
         
-        # Save state
-        with open(DATA_DIR / "runtime_state.json", "w", encoding="utf-8") as f:
-            json.dump(store.data, f, indent=2, ensure_ascii=False)
-    
+        store.write()
+
     return {"ok": True}
 
 @app.post("/tickets", status_code=201)
-def create_ticket(req: TicketRequest):
-    # Validate category
-    with store.lock:
-        categories = store.data.get("escalation_categories", [])
-    if req.category not in categories:
-        return JSONResponse(
-            status_code=422,
-            content={"error": "Invalid category", "detail": "Catégorie invalide."}
-        )
-    
-    # Generate ticket id
-    ticket_id = random_id("TKT-")
-    
-    # Get callback_eta from policies
+def create_ticket(
+    req: TicketRequest,
+    x_session: Optional[str] = Header(None, alias="X-Session"),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
+):
+    # No session required: mandatory hand-offs happen before any verification.
+    # The customer id comes only from a valid session, never from the body.
+    customer = store.customer_for(x_session)
+    customer_id = customer.customer_id if customer else None
+    body = req.model_dump()
+    scope = f"tickets:{customer_id or 'anon'}"
     from neova.policies import callback_eta
-    eta = callback_eta(now())
-    
-    store.create_ticket(
-        ticket_id=ticket_id,
-        customer_id=req.customer_id,
-        category=req.category,
-        summary=req.summary,
-        actions_taken=req.actions_taken,
-        urgency=req.urgency,
-        callback_eta=eta
-    )
-    store.save()
-    
-    return JSONResponse(
-        status_code=201,
-        content={
+
+    # One critical section: replay check, creation and persistence together, so two concurrent
+    # retries cannot both miss the replay and create two tickets.
+    with store.lock:
+        if idempotency_key:
+            replay = idempotent_replay(scope, idempotency_key, body)
+            if replay is not None:
+                return replay
+        if req.category not in store.data.get("escalation_categories", []):
+            return JSONResponse(
+                status_code=422,
+                content={"error": "Invalid category", "detail": "Catégorie invalide."}
+            )
+        ticket_id = random_id("TKT-")
+        eta = callback_eta(now())
+        store.data["tickets"].append({
             "ticket_id": ticket_id,
+            "customer_id": customer_id,
+            "category": req.category,
+            "summary": req.summary,
+            "actions_taken": req.actions_taken,
+            "urgency": req.urgency,
+            "created_at": now().isoformat(),
             "callback_eta": eta,
-        }
-    )
+        })
+        response_body = {"ticket_id": ticket_id, "callback_eta": eta, "customer_id": customer_id}
+        if idempotency_key:
+            remember_response(scope, idempotency_key, body, response_body)
+        store.write()
+
+    return JSONResponse(status_code=201, content=response_body)
 
 @app.post("/admin/chaos")
 def set_chaos(req: ChaosRequest):

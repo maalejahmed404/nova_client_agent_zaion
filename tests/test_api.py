@@ -4,9 +4,33 @@ from neova.api.app import app
 
 client = TestClient(app)
 
-@pytest.fixture(autouse=True)
-def reset_store():
-    client.post("/admin/reset")
+CAMILLE = ("NEO-88213", "0612840193")   # 75019, Fibre, active outage INC-4471
+AHMED = ("NEO-10467", "0778115402")     # 69007, Fibre
+SYLVIE = ("NEO-53190", "0640027781")    # 44000, Mobile
+PRO = ("NEO-71925", "0142886310")       # 75116, Néova Pro
+
+
+def session(customer=CAMILLE) -> dict:
+    resp = client.post("/customers/verify", json={"customer_id": customer[0], "phone": customer[1]})
+    assert resp.status_code == 200
+    return {"X-Session": resp.json()["session"]}
+
+
+def propose(headers, slot_id="SLOT-7A31", reason="no_internet", override="pto_damaged"):
+    return client.post(
+        "/appointments/proposals",
+        json={"slot_id": slot_id, "reason": reason, "override_reason": override},
+        headers=headers,
+    )
+
+
+def book(headers, proposal_id, key):
+    return client.post(
+        "/appointments",
+        json={"proposal_id": proposal_id},
+        headers={**headers, "Idempotency-Key": key},
+    )
+
 
 def test_health():
     response = client.get("/health")
@@ -14,30 +38,21 @@ def test_health():
     assert response.json()["clock"] == "simulated"
 
 def test_incidents_active():
-    response = client.get("/incidents?postal_code=69007")
-    assert response.status_code == 200
-    data = response.json()
+    data = client.get("/incidents?postal_code=69007").json()
     assert any(inc["incident_id"] == "INC-4502" and inc["phase"] == "active" for inc in data)
 
 def test_incidents_planned():
-    response = client.get("/incidents?postal_code=33000")
-    assert response.status_code == 200
-    data = response.json()
+    data = client.get("/incidents?postal_code=33000").json()
     assert any(inc["incident_id"] == "INC-4519" and inc["phase"] == "planned" for inc in data)
 
-def test_slots_contains():
-    response = client.get("/slots?postal_code=59000")
-    assert response.status_code == 200
-    data = response.json()
+def test_slots_from_session_zone():
+    data = client.get("/slots", headers=session(("NEO-40318", "0698441207"))).json()  # Lille 59000
     assert any(slot["slot_id"] == "SLOT-5D23" for slot in data)
 
 def test_slots_zone_incident():
-    response = client.get("/slots?postal_code=75019")
-    assert response.status_code == 200
-    data = response.json()
+    data = client.get("/slots", headers=session()).json()
     assert len(data) > 0
     for item in data:
-        assert item["zone_incident"] is not None
         assert item["zone_incident"]["incident_id"] == "INC-4471"
 
 def test_verify_wrong_phone():
@@ -45,400 +60,258 @@ def test_verify_wrong_phone():
     assert response.status_code == 404
     assert response.json() == {"error": "verification_failed"}
 
-def test_customer_no_phone():
-    # Via get customer
-    response = client.get("/customers/NEO-88213")
+def test_verify_returns_session_and_no_phone():
+    response = client.post("/customers/verify", json={"customer_id": CAMILLE[0], "phone": CAMILLE[1]})
     assert response.status_code == 200
-    assert "phone" not in response.json()
-    
-    # Via verify customer with correct phone
-    response = client.post("/customers/verify", json={"customer_id": "NEO-88213", "phone": "0612840193"})
-    assert response.status_code == 200
-    assert "phone" not in response.json()
+    body = response.json()
+    assert body["session"]
+    assert "phone" not in body["customer"]
 
-# New tests for step 2.2
-def test_appointment_no_override():
-    # Camille NEO-88213 has active outage INC-4471 in 75019
-    response = client.post(
-        "/appointments",
-        json={
-            "customer_id": "NEO-88213",
-            "slot_id": "SLOT-7A31",
-            "reason": "no_internet",
-            "cost_notice_acknowledged": True,
-            "override_reason": None,
-        },
-        headers={"Idempotency-Key": "test-key-1"},
-    )
+
+# --- verified session protects personal routes ---
+
+def test_personal_routes_require_session():
+    assert client.get("/customers/NEO-88213").status_code == 401
+    assert client.get("/customers/NEO-88213/invoices").status_code == 401
+    assert client.get("/slots").status_code == 401
+    assert propose({}).status_code == 401
+    assert book({}, "x", "k").status_code == 401
+
+def test_unknown_session_is_rejected():
+    assert client.get("/customers/NEO-88213", headers={"X-Session": "forged"}).status_code == 401
+
+def test_session_cannot_read_another_customer():
+    headers = session(CAMILLE)
+    assert client.get("/customers/NEO-40318", headers=headers).status_code == 403
+    assert client.get("/customers/NEO-40318/invoices", headers=headers).status_code == 403
+    assert client.get("/customers/NEO-88213", headers=headers).status_code == 200
+
+
+# --- proposals ---
+
+def test_proposal_active_outage_without_override():
+    response = propose(session(), override=None)
     assert response.status_code == 409
     assert response.json()["error"] == "active_outage"
 
-def test_appointment_with_override():
-    response = client.post(
-        "/appointments",
-        json={
-            "customer_id": "NEO-88213",
-            "slot_id": "SLOT-7A31",
-            "reason": "no_internet",
-            "cost_notice_acknowledged": True,
-            "override_reason": "pto_damaged",
-        },
-        headers={"Idempotency-Key": "test-key-2"},
-    )
+def test_proposal_returns_notice_and_books_nothing():
+    response = propose(session())
     assert response.status_code == 201
-    data = response.json()
-    assert "appointment_id" in data
-    assert data["override_reason"] == "pto_damaged"
-    assert "cost_notice" in data
+    body = response.json()
+    assert body["proposal_id"]
+    assert "69 €" in body["cost_notice"]
+    assert body["slot"]["slot_id"] == "SLOT-7A31"
+    slot = next(s for s in client.get("/slots", headers=session()).json() if s["slot_id"] == "SLOT-7A31")
+    assert slot["available"] is True
 
-def test_appointment_non_fibre_plan():
-    # Sylvie NEO-53190 has "Mobile Néova 80 Go"
-    response = client.post(
-        "/appointments",
-        json={
-            "customer_id": "NEO-53190",
-            "slot_id": "SLOT-4N01",
-            "reason": "no_internet",
-            "cost_notice_acknowledged": True,
-            "override_reason": None,
-        },
-        headers={"Idempotency-Key": "test-key-3"},
-    )
+def test_proposal_id_depends_on_override():
+    headers = session()
+    with_override = propose(headers, override="pto_damaged").json()["proposal_id"]
+    without = propose(session(AHMED), slot_id="SLOT-6B10", override=None).json()["proposal_id"]
+    assert with_override != without
+
+def test_proposal_pro_contract_rejected():
+    response = propose(session(PRO), slot_id="SLOT-7A31", override=None)
+    assert response.status_code == 422
+    assert response.json()["error"] == "pro_contract"
+
+def test_proposal_non_fibre_plan():
+    response = propose(session(SYLVIE), slot_id="SLOT-4N01", override=None)
     assert response.status_code == 422
     assert response.json()["error"] == "non_fibre_plan"
 
-def test_appointment_zone_mismatch():
-    # Ahmed NEO-10467 is in 69007, try to book a 75019 slot
-    response = client.post(
-        "/appointments",
-        json={
-            "customer_id": "NEO-10467",
-            "slot_id": "SLOT-7A31",
-            "reason": "no_internet",
-            "cost_notice_acknowledged": True,
-            "override_reason": None,
-        },
-        headers={"Idempotency-Key": "test-key-4"},
-    )
+def test_proposal_zone_mismatch():
+    response = propose(session(AHMED), slot_id="SLOT-7A31", override=None)
     assert response.status_code == 422
     assert response.json()["error"] == "zone_mismatch"
 
-def test_appointment_missing_header():
-    response = client.post(
-        "/appointments",
-        json={
-            "customer_id": "NEO-88213",
-            "slot_id": "SLOT-7A31",
-            "reason": "no_internet",
-            "cost_notice_acknowledged": True,
-            "override_reason": "pto_damaged",
-        },
-    )
-    assert response.status_code == 400
-    assert response.json() == {"error": "idempotency_key_required"}
+def test_proposal_slot_not_found():
+    assert propose(session(), slot_id="SLOT-XXXX").json()["error"] == "slot_not_found"
 
-def test_appointment_idempotency():
-    key = "idemp-key-123"
-    # Get initial available slots count
-    before_slots = client.get("/slots?postal_code=75019").json()
-    available_before = sum(1 for s in before_slots if s["available"])
-    
-    # First call
-    resp1 = client.post(
-        "/appointments",
-        json={
-            "customer_id": "NEO-88213",
-            "slot_id": "SLOT-7A33",  # different from above
-            "reason": "no_internet",
-            "cost_notice_acknowledged": True,
-            "override_reason": "pto_damaged",
-        },
-        headers={"Idempotency-Key": key},
-    )
-    assert resp1.status_code == 201
-    appt_id1 = resp1.json()["appointment_id"]
-    
-    # Check slots count after first booking
-    mid_slots = client.get("/slots?postal_code=75019").json()
-    available_mid = sum(1 for s in mid_slots if s["available"])
-    assert available_mid == available_before - 1  # Should decrease by exactly one
-    
-    # Second call with same key
-    resp2 = client.post(
-        "/appointments",
-        json={
-            "customer_id": "NEO-88213",
-            "slot_id": "SLOT-7A33",
-            "reason": "no_internet",
-            "cost_notice_acknowledged": True,
-            "override_reason": "pto_damaged",
-        },
-        headers={"Idempotency-Key": key},
-    )
-    assert resp2.status_code == 201
-    appt_id2 = resp2.json()["appointment_id"]
-    assert appt_id1 == appt_id2  # Same appointment ID
-    
-    # Verify slot count unchanged after second call (idempotency)
-    after_slots = client.get("/slots?postal_code=75019").json()
-    available_after = sum(1 for s in after_slots if s["available"])
-    assert available_after == available_mid  # No additional decrease
+def test_proposal_invalid_reason():
+    assert propose(session(), reason="invalid_reason").json()["error"] == "invalid_reason"
 
-def test_delete_appointment():
-    # First create an appointment
-    create_resp = client.post(
-        "/appointments",
-        json={
-            "customer_id": "NEO-88213",
-            "slot_id": "SLOT-7A34",
-            "reason": "no_internet",
-            "cost_notice_acknowledged": True,
-            "override_reason": "pto_damaged",
-        },
-        headers={"Idempotency-Key": "delete-test-key"},
-    )
-    assert create_resp.status_code == 201
-    appt_id = create_resp.json()["appointment_id"]
-    
-    # Get all slots (including unavailable) to check status
-    # First, let's check if the slot appears in the slots endpoint
-    slots_before_delete = client.get("/slots?postal_code=75019").json()
-    
-    # Find the specific slot
-    slot_found = False
-    for slot in slots_before_delete:
-        if slot["slot_id"] == "SLOT-7A34":
-            slot_found = True
-            assert slot["available"] == False  # Should be unavailable after booking
-            break
-    
-    # If not found in available slots (because it's now unavailable), 
-    # check through a different endpoint or verify by trying to book it again
-    if not slot_found:
-        # Try to book the same slot again - should fail with slot_taken
-        response = client.post(
-            "/appointments",
-            json={
-                "customer_id": "NEO-71925",  # Different customer
-                "slot_id": "SLOT-7A34",
-                "reason": "no_internet",
-                "cost_notice_acknowledged": True,
-                "override_reason": "pto_damaged",
-            },
-            headers={"Idempotency-Key": "delete-test-key-2"},
-        )
-        assert response.status_code == 409
-        assert response.json()["error"] == "slot_taken"
-    
-    # Delete the appointment
-    delete_resp = client.delete(f"/appointments/{appt_id}")
-    assert delete_resp.status_code == 200
-    assert delete_resp.json()["ok"] is True
-    
-    # Verify slot is available again by checking it appears in available slots
-    slots_after_delete = client.get("/slots?postal_code=75019").json()
-    slot_7a34_after = next((s for s in slots_after_delete if s["slot_id"] == "SLOT-7A34"), None)
-    # SLOT-7A34 should now be available and appear in the list
-    assert slot_7a34_after is not None
-    assert slot_7a34_after["available"] == True
-    
-    # Ensure 404 on unknown
-    resp = client.delete("/appointments/UNKNOWN")
-    assert resp.status_code == 404
-
-def test_ticket_bad_category():
-    response = client.post(
-        "/tickets",
-        json={
-            "customer_id": "NEO-88213",
-            "category": "invalid",
-            "summary": "test",
-            "actions_taken": [],
-            "urgency": "normal",
-        },
-    )
-    assert response.status_code == 422
-
-def test_ticket_callback_eta():
-    response = client.post(
-        "/tickets",
-        json={
-            "customer_id": "NEO-88213",
-            "category": "technical",
-            "summary": "test",
-            "actions_taken": ["rebooted"],
-            "urgency": "normal",
-        },
-    )
-    assert response.status_code == 201
-    data = response.json()
-    assert "callback_eta" in data
-    # "sous 45 minutes" because now is simulated 2026-08-25 10:00 weekday
-    assert data["callback_eta"] == "sous 45 minutes"
-
-def test_chaos_middleware():
-    # Set chaos rate to 1.0
-    client.post("/admin/chaos", json={"rate": 1.0})
-    
-    # /health should still work (admin route)
-    health_resp = client.get("/health")
-    assert health_resp.status_code == 200
-    
-    # /slots should always 500
-    slots_resp = client.get("/slots?postal_code=75019")
-    assert slots_resp.status_code == 500
-    assert slots_resp.json()["error"] == "chaos"
-    
-    # Set back to 0.0
-    client.post("/admin/chaos", json={"rate": 0.0})
-    slots_resp2 = client.get("/slots?postal_code=75019")
-    assert slots_resp2.status_code == 200
-
-# Additional error code tests
-def test_appointment_customer_not_found():
-    response = client.post(
-        "/appointments",
-        json={
-            "customer_id": "NEO-99999",
-            "slot_id": "SLOT-7A31",
-            "reason": "no_internet",
-            "cost_notice_acknowledged": True,
-            "override_reason": "pto_damaged",
-        },
-        headers={"Idempotency-Key": "test-key-5"},
-    )
-    assert response.status_code == 404
-    assert response.json()["error"] == "customer_not_found"
-
-def test_appointment_slot_not_found():
-    response = client.post(
-        "/appointments",
-        json={
-            "customer_id": "NEO-88213",
-            "slot_id": "SLOT-XXXX",
-            "reason": "no_internet",
-            "cost_notice_acknowledged": True,
-            "override_reason": "pto_damaged",
-        },
-        headers={"Idempotency-Key": "test-key-6"},
-    )
-    assert response.status_code == 404
-    assert response.json()["error"] == "slot_not_found"
-
-def test_appointment_slot_in_past():
-    # Inject a synthetic past technician slot into the store
+def test_proposal_slot_in_past():
     from neova.api.store import store
-    from neova.config import now
-    current = now()
-    past_start = current.isoformat()
-    # Create a slot that started in the past but is still available
     with store.lock:
         store.data["technician_slots"].append({
-            "slot_id": "SLOT-PAST1",
-            "postal_codes": ["75019"],
-            "start": "2026-08-24T09:00:00+02:00",  # Past relative to simulated now (2026-08-25)
-            "end": "2026-08-24T11:00:00+02:00",
-            "available": True
+            "slot_id": "SLOT-PAST1", "postal_codes": ["75019"],
+            "start": "2026-08-24T09:00:00+02:00", "end": "2026-08-24T11:00:00+02:00", "available": True,
         })
-    
-    response = client.post(
-        "/appointments",
-        json={
-            "customer_id": "NEO-88213",
-            "slot_id": "SLOT-PAST1",
-            "reason": "no_internet",
-            "cost_notice_acknowledged": True,
-            "override_reason": "pto_damaged",
-        },
-        headers={"Idempotency-Key": "test-key-7"},
-    )
+    response = propose(session(), slot_id="SLOT-PAST1")
     assert response.status_code == 422
     assert response.json()["error"] == "slot_in_past"
 
-def test_appointment_invalid_reason():
-    response = client.post(
-        "/appointments",
-        json={
-            "customer_id": "NEO-88213",
-            "slot_id": "SLOT-7A31",
-            "reason": "invalid_reason",
-            "cost_notice_acknowledged": True,
-            "override_reason": "pto_damaged",
-        },
-        headers={"Idempotency-Key": "test-key-8"},
-    )
-    assert response.status_code == 422
-    assert response.json()["error"] == "invalid_reason"
 
-def test_appointment_cost_notice_required():
-    response = client.post(
-        "/appointments",
-        json={
-            "customer_id": "NEO-88213",
-            "slot_id": "SLOT-7A31",
-            "reason": "no_internet",
-            "cost_notice_acknowledged": False,  # False should fail
-            "override_reason": "pto_damaged",
-        },
-        headers={"Idempotency-Key": "test-key-9"},
-    )
-    assert response.status_code == 422
-    assert response.json()["error"] == "cost_notice_required"
+# --- booking bound to the exact proposal ---
 
-def test_appointment_slot_taken():
-    # First book a slot
-    client.post(
-        "/appointments",
-        json={
-            "customer_id": "NEO-88213",
-            "slot_id": "SLOT-7A33",
-            "reason": "no_internet",
-            "cost_notice_acknowledged": True,
-            "override_reason": "pto_damaged",
-        },
-        headers={"Idempotency-Key": "test-key-10"},
-    )
-    
-    # Try to book the same slot with different customer
-    response = client.post(
-        "/appointments",
-        json={
-            "customer_id": "NEO-71925",  # Different customer
-            "slot_id": "SLOT-7A33",
-            "reason": "no_internet",
-            "cost_notice_acknowledged": True,
-            "override_reason": "pto_damaged",
-        },
-        headers={"Idempotency-Key": "test-key-11"},
-    )
+def test_book_happy_path_consumes_proposal():
+    headers = session()
+    pid = propose(headers).json()["proposal_id"]
+    response = book(headers, pid, "key-1")
+    assert response.status_code == 201
+    body = response.json()
+    assert body["appointment_id"].startswith("APT-")
+    assert body["override_reason"] == "pto_damaged"
+    assert "69 €" in body["cost_notice"]
+    # a second "oui" on the same proposal cannot book again
+    again = book(headers, pid, "key-2")
+    assert again.status_code == 404
+    assert again.json()["error"] == "proposal_unknown"
+
+def test_book_missing_idempotency_header():
+    headers = session()
+    pid = propose(headers).json()["proposal_id"]
+    response = client.post("/appointments", json={"proposal_id": pid}, headers=headers)
+    assert response.status_code == 400
+
+def test_book_unknown_proposal():
+    response = book(session(), "0" * 64, "key-3")
+    assert response.status_code == 404
+    assert response.json()["error"] == "proposal_unknown"
+
+def test_book_another_customers_proposal():
+    pid = propose(session(CAMILLE)).json()["proposal_id"]
+    response = book(session(AHMED), pid, "key-4")
+    assert response.status_code == 403
+    assert response.json()["error"] == "proposal_mismatch"
+
+def test_book_slot_taken_between_proposal_and_confirmation():
+    first = session(CAMILLE)
+    pid_first = propose(first, slot_id="SLOT-7A33").json()["proposal_id"]
+    second = session(PRO)  # same zone 75116 shares SLOT-7A33, but Pro is rejected at proposal
+    assert propose(second, slot_id="SLOT-7A33").status_code == 422
+    # take the slot with another Fibre customer in the same zone is impossible in the dataset,
+    # so mark it unavailable directly to simulate the race
+    from neova.api.store import store
+    with store.lock:
+        next(s for s in store.data["technician_slots"] if s["slot_id"] == "SLOT-7A33")["available"] = False
+    response = book(first, pid_first, "key-5")
     assert response.status_code == 409
     assert response.json()["error"] == "slot_taken"
 
-def test_appointment_already_has_appointment():
-    # First book an appointment for Camille
-    client.post(
-        "/appointments",
-        json={
-            "customer_id": "NEO-88213",
-            "slot_id": "SLOT-7A33",
-            "reason": "no_internet",
-            "cost_notice_acknowledged": True,
-            "override_reason": "pto_damaged",
-        },
-        headers={"Idempotency-Key": "test-key-12"},
-    )
-    
-    # Try to book another appointment for same customer
-    response = client.post(
-        "/appointments",
-        json={
-            "customer_id": "NEO-88213",
-            "slot_id": "SLOT-7A34",  # Different slot
-            "reason": "no_internet",
-            "cost_notice_acknowledged": True,
-            "override_reason": "pto_damaged",
-        },
-        headers={"Idempotency-Key": "test-key-13"},
-    )
+def test_book_already_has_appointment():
+    headers = session()
+    pid1 = propose(headers, slot_id="SLOT-7A33").json()["proposal_id"]
+    assert book(headers, pid1, "key-6").status_code == 201
+    pid2 = propose(headers, slot_id="SLOT-7A34").json()["proposal_id"]
+    response = book(headers, pid2, "key-7")
     assert response.status_code == 409
     assert response.json()["error"] == "already_has_appointment"
+
+
+# --- idempotency ---
+
+def test_book_retry_after_consumption_replays_same_result():
+    headers = session()
+    before = sum(1 for s in client.get("/slots", headers=headers).json() if s["available"])
+    pid = propose(headers, slot_id="SLOT-7A33").json()["proposal_id"]
+    first = book(headers, pid, "retry-key")
+    assert first.status_code == 201
+    retry = book(headers, pid, "retry-key")
+    assert retry.status_code == 201
+    assert retry.json()["appointment_id"] == first.json()["appointment_id"]
+    after = sum(1 for s in client.get("/slots", headers=headers).json() if s["available"])
+    assert after == before - 1
+
+def test_book_same_key_different_body_conflicts():
+    headers = session()
+    pid1 = propose(headers, slot_id="SLOT-7A33").json()["proposal_id"]
+    assert book(headers, pid1, "shared-key").status_code == 201
+    pid2 = propose(headers, slot_id="SLOT-7A34").json()["proposal_id"]
+    response = book(headers, pid2, "shared-key")
+    assert response.status_code == 409
+    assert response.json()["error"] == "idempotency_conflict"
+
+
+# --- delete ---
+
+def test_delete_appointment_frees_slot():
+    headers = session()
+    pid = propose(headers, slot_id="SLOT-7A34").json()["proposal_id"]
+    appt_id = book(headers, pid, "delete-key").json()["appointment_id"]
+    assert not any(s["slot_id"] == "SLOT-7A34" for s in client.get("/slots", headers=headers).json())
+    assert client.delete(f"/appointments/{appt_id}").json()["ok"] is True
+    assert any(s["slot_id"] == "SLOT-7A34" for s in client.get("/slots", headers=headers).json())
+    assert client.delete("/appointments/UNKNOWN").status_code == 404
+
+
+# --- tickets ---
+
+TICKET = {"category": "technical", "summary": "test", "actions_taken": ["rebooted"], "urgency": "normal"}
+
+def test_ticket_bad_category():
+    response = client.post("/tickets", json={**TICKET, "category": "invalid"})
+    assert response.status_code == 422
+
+def test_ticket_without_session_for_mandatory_handoff():
+    response = client.post("/tickets", json={**TICKET, "customer_id": "NEO-88213"})
+    assert response.status_code == 201
+    body = response.json()
+    assert body["customer_id"] is None          # body id is ignored without a session
+    assert body["callback_eta"] == "sous 45 minutes"
+
+def test_ticket_with_session_uses_session_identity():
+    response = client.post("/tickets", json={**TICKET, "customer_id": "NEO-40318"}, headers=session(CAMILLE))
+    assert response.status_code == 201
+    assert response.json()["customer_id"] == "NEO-88213"
+
+def test_ticket_idempotent_replay():
+    first = client.post("/tickets", json=TICKET, headers={"Idempotency-Key": "t-key"})
+    second = client.post("/tickets", json=TICKET, headers={"Idempotency-Key": "t-key"})
+    assert first.json()["ticket_id"] == second.json()["ticket_id"]
+    assert len(client.get("/admin/tickets").json()) == 1
+    conflict = client.post("/tickets", json={**TICKET, "summary": "other"}, headers={"Idempotency-Key": "t-key"})
+    assert conflict.status_code == 409
+
+
+# --- regressions: idempotency bound to identity, ticket creation atomic ---
+
+def test_replay_is_bound_to_the_customer_who_used_the_key():
+    camille = session(CAMILLE)
+    pid = propose(camille).json()["proposal_id"]
+    stored = book(camille, pid, "shared-key")
+    assert stored.status_code == 201
+    # Ahmed reuses Camille's key and proposal id: must not receive her booking
+    response = book(session(AHMED), pid, "shared-key")
+    assert response.status_code in (403, 404)
+    assert "appointment_id" not in response.json()
+    # ticket: same key, same body, another customer -> a different ticket, not a replay
+    first = client.post("/tickets", json=TICKET, headers={**camille, "Idempotency-Key": "t-shared"})
+    second = client.post("/tickets", json=TICKET, headers={**session(AHMED), "Idempotency-Key": "t-shared"})
+    assert first.json()["customer_id"] == "NEO-88213"
+    assert second.json()["customer_id"] == "NEO-10467"
+    assert first.json()["ticket_id"] != second.json()["ticket_id"]
+
+def test_concurrent_ticket_retries_create_one_ticket():
+    from concurrent.futures import ThreadPoolExecutor
+    from neova.api import app as app_module
+    from neova.api.store import store
+
+    # Widen the race: hold the store lock briefly on every write so both threads are in flight.
+    original_write = store.write
+    def slow_write():
+        import time
+        time.sleep(0.05)
+        original_write()
+    store.write = slow_write
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(
+                lambda _: client.post("/tickets", json=TICKET, headers={"Idempotency-Key": "race-key"}),
+                range(2),
+            ))
+    finally:
+        store.write = original_write
+    assert {r.status_code for r in results} == {201}
+    assert len({r.json()["ticket_id"] for r in results}) == 1
+    assert len(client.get("/admin/tickets").json()) == 1
+
+
+def test_chaos_middleware():
+    client.post("/admin/chaos", json={"rate": 1.0})
+    assert client.get("/health").status_code == 200
+    resp = client.get("/incidents?postal_code=75019")
+    assert resp.status_code == 500 and resp.json()["error"] == "chaos"
+    client.post("/admin/chaos", json={"rate": 0.0})
+    assert client.get("/incidents?postal_code=75019").status_code == 200

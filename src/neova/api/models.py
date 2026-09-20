@@ -75,3 +75,19 @@ class Ticket(BaseModel):
 class VerifyRequest(BaseModel):
     customer_id: str
     phone: str
+
+class VerifyResponse(BaseModel):
+    customer: Customer
+    session: str
+
+class ProposalRequest(BaseModel):
+    slot_id: str
+    reason: str
+    override_reason: Optional[Literal["pto_damaged", "equipment_damaged"]] = None
+
+class ProposalResponse(BaseModel):
+    proposal_id: str
+    slot: Slot
+    reason: str
+    override_reason: Optional[str] = None
+    cost_notice: str

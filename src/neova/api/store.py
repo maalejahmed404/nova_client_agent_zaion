@@ -1,29 +1,82 @@
+import hashlib
 import json
+import secrets
 import threading
 import random
 import string
+from pathlib import Path
 from typing import List, Optional, Dict
 from datetime import datetime
 from neova.config import DATA_DIR, now, get_settings
 from neova.api.models import Customer, Incident, Slot, SlotWithZone, Invoice, Appointment, Ticket
 
+
+def proposal_id(customer_id: str, slot_id: str, reason: str, override_reason: Optional[str], cost_notice: str) -> str:
+    raw = "|".join([customer_id, slot_id, reason, override_reason or "", cost_notice])
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def body_hash(body: dict) -> str:
+    return hashlib.sha256(json.dumps(body, sort_keys=True).encode("utf-8")).hexdigest()
+
+
 class Store:
-    def __init__(self):
+    def __init__(self, data_dir: Path = DATA_DIR):
         self.lock = threading.Lock()
+        self.seed_path = data_dir / "neova_data.json"
+        self.runtime_path = data_dir / "runtime_state.json"
         self.data = {}
         self.idempotency_keys: Dict[str, dict] = {}
-        self.reset()
+        self.sessions: Dict[str, str] = {}
+        self.proposals: Dict[str, dict] = {}
+        self.load()
+
+    def load(self):
+        with self.lock:
+            if self.runtime_path.exists():
+                with open(self.runtime_path, "r", encoding="utf-8") as f:
+                    state = json.load(f)
+                if "data" not in state:  # file written before idempotency/proposals were persisted
+                    state = {"data": state}
+                self.data = state["data"]
+                self.idempotency_keys = state.get("idempotency", {})
+                self.proposals = state.get("proposals", {})
+            else:
+                with open(self.seed_path, "r", encoding="utf-8") as f:
+                    self.data = json.load(f)
 
     def reset(self):
         with self.lock:
-            with open(DATA_DIR / "neova_data.json", "r", encoding="utf-8") as f:
+            with open(self.seed_path, "r", encoding="utf-8") as f:
                 self.data = json.load(f)
             self.idempotency_keys.clear()
+            self.sessions.clear()
+            self.proposals.clear()
+
+    def write(self):
+        """Persist state. Caller must hold self.lock."""
+        state = {"data": self.data, "idempotency": self.idempotency_keys, "proposals": self.proposals}
+        with open(self.runtime_path, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2, ensure_ascii=False)
 
     def save(self):
         with self.lock:
-            with open(DATA_DIR / "runtime_state.json", "w", encoding="utf-8") as f:
-                json.dump(self.data, f, indent=2, ensure_ascii=False)
+            self.write()
+
+    def create_session(self, customer_id: str) -> str:
+        token = secrets.token_urlsafe(16)
+        with self.lock:
+            self.sessions[token] = customer_id
+        return token
+
+    def customer_for(self, token: Optional[str]) -> Optional[Customer]:
+        if not token:
+            return None
+        with self.lock:
+            customer_id = self.sessions.get(token)
+        if not customer_id:
+            return None
+        return self.get_customer(customer_id)
 
     def get_customer(self, customer_id: str) -> Optional[Customer]:
         with self.lock:
