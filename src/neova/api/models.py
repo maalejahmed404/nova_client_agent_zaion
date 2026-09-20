@@ -1,6 +1,6 @@
 from datetime import datetime
-from typing import List, Optional
-from pydantic import BaseModel, Field, computed_field
+from typing import List, Optional, Literal
+from pydantic import BaseModel, Field, computed_field, field_validator
 from neova.config import now
 
 class Invoice(BaseModel):
@@ -59,16 +59,16 @@ class Appointment(BaseModel):
     start: datetime
     end: datetime
     reason: str
-    override_reason: Optional[str] = None
+    override_reason: Optional[Literal["pto_damaged", "equipment_damaged"]] = None
     created_at: datetime
 
 class Ticket(BaseModel):
     ticket_id: str
-    customer_id: str
+    customer_id: Optional[str] = None
     category: str
     summary: str
     actions_taken: List[str]
-    urgency: str
+    urgency: Literal["low", "normal", "high"]
     created_at: datetime
     callback_eta: str
 
