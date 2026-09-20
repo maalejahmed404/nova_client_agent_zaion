@@ -1,0 +1,164 @@
+{
+  "_note": "Néova Télécom — raw dataset for the take-home assignment. Expose what you need of this via your own FastAPI service. Prices in EUR, dates ISO-8601, Europe/Paris.",
+
+  "customers": [
+    {
+      "customer_id": "NEO-88213",
+      "full_name": "Camille Rousseau",
+      "phone": "0612840193",
+      "plan": "Fibre Néova 1 Gb/s",
+      "monthly_price": 39.99,
+      "contract_start_date": "2024-03-14",
+      "engagement_months": 12,
+      "address": "14 rue de l'Ourcq, 75019 Paris",
+      "postal_code": "75019",
+      "balance_due": 0.0,
+      "open_incident_id": "INC-4471",
+      "equipment": ["Box Néova 6", "Décodeur TV"],
+      "last_invoices": [
+        {"invoice_id": "F-2026-0612", "date": "2026-06-05", "amount": 39.99, "status": "paid"},
+        {"invoice_id": "F-2026-0713", "date": "2026-07-05", "amount": 39.99, "status": "paid"},
+        {"invoice_id": "F-2026-0801", "date": "2026-08-05", "amount": 39.99, "status": "paid"}
+      ]
+    },
+    {
+      "customer_id": "NEO-10467",
+      "full_name": "Ahmed Belkacem",
+      "phone": "0778115402",
+      "plan": "Fibre Néova 500 Mb/s",
+      "monthly_price": 29.99,
+      "contract_start_date": "2026-05-02",
+      "engagement_months": 24,
+      "address": "8 avenue Berthelot, 69007 Lyon",
+      "postal_code": "69007",
+      "balance_due": 61.98,
+      "open_incident_id": null,
+      "equipment": ["Box Néova 5"],
+      "last_invoices": [
+        {"invoice_id": "F-2026-0655", "date": "2026-06-05", "amount": 29.99, "status": "unpaid"},
+        {"invoice_id": "F-2026-0741", "date": "2026-07-05", "amount": 31.99, "status": "unpaid"},
+        {"invoice_id": "F-2026-0829", "date": "2026-08-05", "amount": 29.99, "status": "pending"}
+      ]
+    },
+    {
+      "customer_id": "NEO-53190",
+      "full_name": "Sylvie Marchand",
+      "phone": "0640027781",
+      "plan": "Mobile Néova 80 Go",
+      "monthly_price": 14.99,
+      "contract_start_date": "2021-11-30",
+      "engagement_months": 0,
+      "address": "22 quai de Versailles, 44000 Nantes",
+      "postal_code": "44000",
+      "balance_due": 0.0,
+      "open_incident_id": null,
+      "equipment": [],
+      "last_invoices": [
+        {"invoice_id": "F-2026-0703", "date": "2026-07-05", "amount": 14.99, "status": "paid"},
+        {"invoice_id": "F-2026-0812", "date": "2026-08-05", "amount": 21.49, "status": "paid"}
+      ]
+    },
+    {
+      "customer_id": "NEO-27604",
+      "full_name": "Léa Nguyen",
+      "phone": "0755390218",
+      "plan": "Fibre Néova 500 Mb/s",
+      "monthly_price": 29.99,
+      "contract_start_date": "2025-01-20",
+      "engagement_months": 12,
+      "address": "3 place Saint-Michel, 33000 Bordeaux",
+      "postal_code": "33000",
+      "balance_due": 0.0,
+      "open_incident_id": "INC-4519",
+      "equipment": ["Box Néova 6"],
+      "last_invoices": [
+        {"invoice_id": "F-2026-0688", "date": "2026-07-05", "amount": 29.99, "status": "paid"},
+        {"invoice_id": "F-2026-0844", "date": "2026-08-05", "amount": 29.99, "status": "paid"}
+      ]
+    },
+    {
+      "customer_id": "NEO-71925",
+      "full_name": "Bureau Vallée Étoile (contrat Pro)",
+      "phone": "0142886310",
+      "plan": "Néova Pro Fibre 2 Gb/s",
+      "monthly_price": 89.0,
+      "contract_start_date": "2023-06-01",
+      "engagement_months": 36,
+      "address": "5 rue de Presbourg, 75116 Paris",
+      "postal_code": "75116",
+      "balance_due": 0.0,
+      "open_incident_id": null,
+      "equipment": ["Box Néova Pro", "Routeur secours 4G"],
+      "last_invoices": [
+        {"invoice_id": "F-2026-0710", "date": "2026-07-05", "amount": 89.0, "status": "paid"}
+      ]
+    },
+    {
+      "customer_id": "NEO-40318",
+      "full_name": "Patrick Doré",
+      "phone": "0698441207",
+      "plan": "Fibre Néova 1 Gb/s",
+      "monthly_price": 39.99,
+      "contract_start_date": "2026-07-28",
+      "engagement_months": 24,
+      "address": "17 rue Gambetta, 59000 Lille",
+      "postal_code": "59000",
+      "balance_due": 39.99,
+      "open_incident_id": null,
+      "equipment": ["Box Néova 6"],
+      "last_invoices": [
+        {"invoice_id": "F-2026-0851", "date": "2026-08-05", "amount": 52.49, "status": "unpaid"}
+      ]
+    }
+  ],
+
+  "network_incidents": [
+    {
+      "incident_id": "INC-4471",
+      "postal_codes": ["75019", "75020"],
+      "status": "outage",
+      "cause": "Coupure de fibre sur artère principale",
+      "affected_customers": 1840,
+      "started_at": "2026-08-25T06:12:00+02:00",
+      "estimated_resolution": "2026-08-25T18:00:00+02:00"
+    },
+    {
+      "incident_id": "INC-4502",
+      "postal_codes": ["69007"],
+      "status": "degraded",
+      "cause": "Saturation d'un noeud de raccordement",
+      "affected_customers": 210,
+      "started_at": "2026-08-23T14:40:00+02:00",
+      "estimated_resolution": null
+    },
+    {
+      "incident_id": "INC-4519",
+      "postal_codes": ["33000"],
+      "status": "maintenance",
+      "cause": "Maintenance planifiée",
+      "affected_customers": 95,
+      "started_at": "2026-08-26T01:00:00+02:00",
+      "estimated_resolution": "2026-08-26T05:00:00+02:00"
+    }
+  ],
+
+  "technician_slots": [
+    {"slot_id": "SLOT-7A31", "postal_codes": ["75019", "75020", "75116"], "start": "2026-08-27T09:00:00+02:00", "end": "2026-08-27T11:00:00+02:00", "available": true},
+    {"slot_id": "SLOT-7A32", "postal_codes": ["75019", "75020", "75116"], "start": "2026-08-27T14:00:00+02:00", "end": "2026-08-27T16:00:00+02:00", "available": false},
+    {"slot_id": "SLOT-7A33", "postal_codes": ["75019", "75020", "75116"], "start": "2026-08-28T09:00:00+02:00", "end": "2026-08-28T11:00:00+02:00", "available": true},
+    {"slot_id": "SLOT-7A34", "postal_codes": ["75019", "75020", "75116"], "start": "2026-08-29T14:00:00+02:00", "end": "2026-08-29T16:00:00+02:00", "available": true},
+    {"slot_id": "SLOT-6B10", "postal_codes": ["69007"], "start": "2026-08-27T10:00:00+02:00", "end": "2026-08-27T12:00:00+02:00", "available": true},
+    {"slot_id": "SLOT-6B11", "postal_codes": ["69007"], "start": "2026-08-28T14:00:00+02:00", "end": "2026-08-28T16:00:00+02:00", "available": true},
+    {"slot_id": "SLOT-6B12", "postal_codes": ["69007"], "start": "2026-08-31T09:00:00+02:00", "end": "2026-08-31T11:00:00+02:00", "available": false},
+    {"slot_id": "SLOT-3C05", "postal_codes": ["33000"], "start": "2026-08-27T09:00:00+02:00", "end": "2026-08-27T11:00:00+02:00", "available": true},
+    {"slot_id": "SLOT-3C06", "postal_codes": ["33000"], "start": "2026-09-01T14:00:00+02:00", "end": "2026-09-01T16:00:00+02:00", "available": true},
+    {"slot_id": "SLOT-5D22", "postal_codes": ["59000"], "start": "2026-08-28T09:00:00+02:00", "end": "2026-08-28T11:00:00+02:00", "available": true},
+    {"slot_id": "SLOT-5D23", "postal_codes": ["59000"], "start": "2026-08-31T14:00:00+02:00", "end": "2026-08-31T16:00:00+02:00", "available": true},
+    {"slot_id": "SLOT-4N01", "postal_codes": ["44000"], "start": "2026-08-29T09:00:00+02:00", "end": "2026-08-29T11:00:00+02:00", "available": true}
+  ],
+
+  "appointment_reasons": ["no_internet", "slow_internet", "installation", "equipment_swap"],
+  "escalation_categories": ["billing_dispute", "technical", "termination", "commercial_gesture", "other"],
+  "appointments": [],
+  "tickets": []
+}
