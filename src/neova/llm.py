@@ -124,11 +124,27 @@ def embed_texts(texts: list[str], instruction: str | None = None) -> list[list[f
     return [vectors[index] for index in range(len(sent))]
 
 
-def transcribe_image(path: Path) -> str:
+OCR_PROMPT_VERSION = "1"
+
+
+def ocr_cache_paths(image_bytes: bytes) -> tuple[Path, Path]:
+    """(new key: image + vision model + prompt version, legacy key: image only)."""
+    settings = get_settings()
+    keyed = hashlib.sha256(
+        image_bytes + settings.vision_model.encode("utf-8") + OCR_PROMPT_VERSION.encode("utf-8")
+    ).hexdigest()
+    legacy = hashlib.sha256(image_bytes).hexdigest()
+    return CACHE_DIR / "ocr" / f"{keyed}.md", CACHE_DIR / "ocr" / f"{legacy}.md"
+
+
+def transcribe_image(path: Path, offline: bool = False) -> str:
     image_bytes = path.read_bytes()
-    cache_file = CACHE_DIR / "ocr" / f"{hashlib.sha256(image_bytes).hexdigest()}.md"
-    if cache_file.exists():
-        return cache_file.read_text(encoding="utf-8")
+    cache_file, legacy_file = ocr_cache_paths(image_bytes)
+    for candidate in (cache_file, legacy_file):
+        if candidate.exists():
+            return candidate.read_text(encoding="utf-8")
+    if offline:
+        raise RuntimeError(f"no cached transcription for {path.name} and offline mode is on")
 
     encoded = base64.b64encode(image_bytes).decode("ascii")
     message = HumanMessage(

@@ -101,6 +101,31 @@ def test_usage_logger_writes_one_record_from_llm_output():
     }
 
 
+def test_ocr_cache_new_key_then_legacy_then_offline(monkeypatch):
+    image = llm.CACHE_DIR / "scan.png"
+    image.parent.mkdir(parents=True, exist_ok=True)
+    image.write_bytes(b"not really a png")
+    keyed, legacy = llm.ocr_cache_paths(image.read_bytes())
+    assert keyed != legacy and keyed.parent == legacy.parent
+
+    with pytest.raises(RuntimeError):
+        llm.transcribe_image(image, offline=True)          # nothing cached, no model call allowed
+
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text("legacy transcription", encoding="utf-8")
+    assert llm.transcribe_image(image, offline=True) == "legacy transcription"
+
+    keyed.write_text("keyed transcription", encoding="utf-8")
+    assert llm.transcribe_image(image, offline=True) == "keyed transcription"   # new key wins
+
+
+def test_ocr_cache_key_changes_with_vision_model(monkeypatch):
+    keyed_a, _ = llm.ocr_cache_paths(b"img")
+    monkeypatch.setattr(llm.get_settings(), "vision_model", "other/vision")
+    keyed_b, _ = llm.ocr_cache_paths(b"img")
+    assert keyed_a != keyed_b
+
+
 def test_usage_logger_falls_back_to_message_usage_metadata():
     logger = llm.UsageLogger()
     run_id = uuid4()
