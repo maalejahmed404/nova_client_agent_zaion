@@ -157,11 +157,19 @@ filtered.
   transferred without first restating the documented rule to the customer.
 - The FAQ says technicians work Tuesday to Saturday; the API offers a Monday slot. The API is
   treated as the system of record.
+- Deciding that the corpus has no answer is left to an LLM. A similarity threshold was tried and
+  rejected (see Evaluation); an NLI check was considered but set aside for other features. The
+  LLM is not deterministic, so the same question can be answered once and transferred the next
+  time, and a vague question can be answered by inference from a document that does not really
+  cover it.
 
 ## With two more days
 
-1. An end-to-end evaluation of the agent: scripted conversations checked on the API's records
+1. Rework conversation memory so each question is judged on its own: the checks read the recent
+   transcript, so an earlier request can still weigh on how a later, unrelated one is treated.
+2. Improve `post_review`: measure its false transfers and misses on a labelled set, then tighten it.
+3. An end-to-end evaluation of the agent: scripted conversations checked on the API's records
    and on what the customer reads, with cases written by someone other than the author.
-2. Persist conversations (`SqliteSaver`) and expire API sessions.
-3. Langfuse tracing per node, with the evaluations wired in.
-4. Detect inconsistent customer records and hand them off instead of answering from one figure.
+4. Persist conversations (`SqliteSaver`) and expire API sessions.
+5. Langfuse tracing per node, with the evaluations wired in.
+6. Detect inconsistent customer records and hand them off instead of answering from one figure.
