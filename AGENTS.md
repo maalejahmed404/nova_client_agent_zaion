@@ -1,9 +1,9 @@
 # Project rules for the coding assistant
 
 Néova Télécom customer-relations agent. Python 3.12 managed with uv. Package in src/neova.
-Layout: src/neova/config.py (settings + clock + paths), src/neova/policies.py (business rules),
+Layout: src/neova/config.py (settings + clock + paths),
 src/neova/api (FastAPI), src/neova/llm.py (OpenRouter gateway), src/neova/rag (retrieval),
-src/neova/agent (LangGraph; agent/tools.py = neutral customer facts, no policy numbers). Data: data/neova_data.json. Corpus: corpus/*.pdf and one .png.
+src/neova/agent (LangGraph; agent/tools.py = HTTP client of the API). Data: data/neova_data.json. Corpus: corpus/*.pdf and one .png.
 This machine is Windows: run commands with PowerShell syntax, always through `uv run`.
 
 Hard rules:
