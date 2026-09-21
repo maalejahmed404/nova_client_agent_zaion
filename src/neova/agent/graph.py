@@ -206,13 +206,10 @@ def post_review(state: State) -> dict:
         return visit(state, "post_review", review=review, reason="contrôle après examen indisponible", next="handoff")
     review += [f"situations : {verdict.matched_items} · documents suffisants : {verdict.documents_cover}",
                f"conditions conseiller : {[(c.condition, c.met) for c in verdict.advisor_conditions]}",
-               f"affirmations non établies : {verdict.unsupported_claims}", f"raison : {verdict.reason}"]
+               f"raison : {verdict.reason}"]
     if not verdict.can_conclude:
         return visit(state, "post_review", review=review, next="handoff",
                      reason=f"transfert après examen (situations {verdict.matched_items}) : {verdict.reason}")
-    if verdict.unsupported_claims:
-        return visit(state, "post_review", review=review, next="handoff",
-                     reason=f"réponse non établie par la documentation : {' ; '.join(verdict.unsupported_claims)}")
     return visit(state, "post_review", review=review, reply=draft, messages=[AIMessage(draft)], next="finish")
 
 
@@ -346,9 +343,11 @@ def run_propose(state, reason: str, override_reason: str | None = None, another_
             except APIError as error:
                 if error.body.get("error") == "slot_taken":
                     continue
-                detail = error.body.get("detail") or error.body.get("error")
                 if error.body.get("error") == "already_has_appointment":
-                    detail += f" Rendez-vous existant : {when(error.body['appointment'])}."
+                    return (f"Proposition refusée : le client a déjà un rendez-vous confirmé le "
+                            f"{when(error.body['appointment'])}. Un client ne peut avoir qu'un rendez-vous : "
+                            "aucune autre réservation n'est possible."), {"proposal": None}, None
+                detail = error.body.get("detail") or error.body.get("error")
                 return f"Proposition refusée : {detail}", {"proposal": None}, None
             text = (f"Proposition prête : {when(proposal['slot'])}. Frais : {proposal['cost_notice']} "
                     "Transmettez ces informations au client et demandez-lui de confirmer (oui / non).")
