@@ -57,7 +57,8 @@ def api(port: int = 8000):
 @app.command()
 def chat(logs: bool = typer.Option(True, help="Affiche les nœuds et les outils exécutés.")):
     url = get_settings().api_base_url.rstrip("/")
-    if not api_is_up(url):
+    own_api = not api_is_up(url)
+    if own_api:
         server = uvicorn.Server(uvicorn.Config("neova.api.app:app", port=urlparse(url).port or 8000, log_level="warning"))
         threading.Thread(target=server.run, daemon=True).start()
         for _ in range(50):
@@ -67,17 +68,21 @@ def chat(logs: bool = typer.Option(True, help="Affiche les nœuds et les outils 
     graph, thread, logins = build(), str(uuid.uuid4()), demo_logins()
     typer.echo("Néova — assistant client. Ligne vide pour quitter.")
     typer.echo("Démo : tapez le nom complet d'un client des données (ex. Ahmed Belkacem) pour vous identifier.\n")
-    while message := input("vous > ").strip():
-        name = difflib.get_close_matches(fold(message), logins, n=1, cutoff=0.8)
-        if name:
-            message = logins[name[0]]
-            typer.echo(f"(démo : identifiants envoyés {message})")
-        config = {"configurable": {"thread_id": thread}}
-        for step in graph.stream({"message": message, "next": ""}, config, stream_mode="updates"):
-            for node, update in step.items():
-                if logs:
-                    show(node, update)
-        typer.echo(f"néova > {graph.get_state(config).values['reply']}\n")
+    try:
+        while message := input("vous > ").strip():
+            name = difflib.get_close_matches(fold(message), logins, n=1, cutoff=0.8)
+            if name:
+                message = logins[name[0]]
+                typer.echo(f"(démo : identifiants envoyés {message})")
+            config = {"configurable": {"thread_id": thread}}
+            for step in graph.stream({"message": message, "next": ""}, config, stream_mode="updates"):
+                for node, update in step.items():
+                    if logs:
+                        show(node, update)
+            typer.echo(f"néova > {graph.get_state(config).values['reply']}\n")
+    finally:
+        if own_api:
+            (DATA_DIR / "runtime_state.json").unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
