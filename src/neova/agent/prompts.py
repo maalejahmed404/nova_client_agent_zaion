@@ -139,10 +139,13 @@ def gesture(message: str, facts: dict) -> GestureVerdict | None:
                                 "customer_outcome": "refused" if decision == "not_eligible" else "under_review"})
 
 
-def draft_ticket(conversation: str, actions: list[str]) -> dict:
-    v = ask("ticket", HandoffTicket, data("contexte", conversation), data("actions", actions))
+def draft_ticket(conversation: str, actions: list[str], reason: str = "") -> dict:
+    """actions = what the agent really did; reason = why the graph decided to transfer (context for the
+    motif, never listed as an action)."""
+    v = ask("ticket", HandoffTicket, data("contexte", conversation), data("actions", actions), data("motif_interne", reason))
     if v is None:
-        return {"category": "other", "summary": conversation[-1000:], "actions_taken": actions, "urgency": "normal"}
+        return {"category": "other", "summary": f"{reason} — {conversation[-1000:]}".strip(" —"),
+                "actions_taken": actions, "urgency": "normal"}
     return {"category": v.category, "summary": f"{v.motif} — {v.summary}", "actions_taken": v.actions_taken,
             "urgency": v.urgency}
 

@@ -70,8 +70,9 @@ def test_ticket_is_built_even_when_the_llm_fails(fake_llm):
                                    actions_taken=["redémarrage"], urgency="normal"))
     assert prompts.draft_ticket("...", [])["summary"] == "Panne persistante — Box rouge"
     fake_llm(RuntimeError("down"))
-    assert prompts.draft_ticket("mon père est décédé", ["aucune"]) == {
-        "category": "other", "summary": "mon père est décédé", "actions_taken": ["aucune"], "urgency": "normal"}
+    assert prompts.draft_ticket("mon père est décédé", ["aucune"], "transfert immédiat") == {
+        "category": "other", "summary": "transfert immédiat — mon père est décédé", "actions_taken": ["aucune"],
+        "urgency": "normal"}
 
 
 def test_handoff_message_announces_the_api_delay(monkeypatch):

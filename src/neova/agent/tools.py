@@ -1,9 +1,11 @@
-"""The agent's only access to customer data: the Néova API, one method per endpoint. Transient
-failures (5xx, network) are retried; every write carries an idempotency key, which the caller can keep to replay the operation."""
+"""The agent's tools. `NeovaAPI` is the HTTP client of our FastAPI service (retries on 5xx, one
+idempotency key per write). The `@tool` functions below are what the LLM sees: their docstrings are
+its only documentation. They are executed by the graph's `tools` node, which owns the state."""
 import uuid
 
 import httpx
 import tenacity
+from langchain_core.tools import tool
 
 from neova.config import get_settings
 
@@ -83,3 +85,64 @@ class NeovaAPI:
                       idempotency_key: str | None = None) -> dict:
         return self._call("POST", "/tickets", idempotency_key=idempotency_key or str(uuid.uuid4()), json={
             "category": category, "summary": summary, "actions_taken": actions_taken, "urgency": urgency})
+
+
+# --------------------------------------------------------------------------- what the LLM sees
+# Bodies are placeholders: the graph's `tools` node executes each call with access to the state.
+
+@tool
+def search_documents(question: str, historical: bool = False) -> str:
+    """Cherche dans la documentation publique de Néova (offres, tarifs, FAQ, CGV, procédures).
+    question : une question complète et autonome en français. historical : true seulement si le
+    client parle d'une offre ou d'un tarif passé. Renvoie des passages avec leur identifiant."""
+
+
+@tool
+def verify_customer(customer_id: str, phone: str) -> str:
+    """Vérifie l'identité du client avec son numéro client (format NEO-XXXXX) et le numéro de
+    téléphone de son contrat, tels qu'il les a donnés. Ouvre l'accès à son dossier."""
+
+
+@tool
+def get_customer() -> str:
+    """Le dossier du client identifié : offre, prix mensuel, dates, ancienneté, engagement, solde
+    dû, factures, équipements, incident en cours sur sa ligne. Nécessite une identité vérifiée."""
+
+
+@tool
+def get_incidents() -> str:
+    """Les incidents réseau dans la zone du client identifié, avec leur état et leur durée."""
+
+
+@tool
+def propose_appointment(reason: str, override_reason: str | None = None, another_slot: bool = False) -> str:
+    """Prépare un rendez-vous technicien sur le prochain créneau disponible dans la zone du client
+    identifié, sans le réserver. reason parmi no_internet, slow_internet, installation,
+    equipment_swap. override_reason : pto_damaged ou equipment_damaged si le client décrit une prise
+    ou un équipement endommagé, sinon rien. another_slot : true si le client refuse le créneau
+    proposé et en veut un autre. Renvoie la date, l'heure et l'information sur les frais à
+    transmettre au client."""
+
+
+@tool
+def book_appointment() -> str:
+    """Réserve le rendez-vous proposé. À appeler seulement après que le client a clairement
+    accepté la proposition (oui). La réservation n'est faite que si sa réponse est bien positive."""
+
+
+@tool
+def assess_gesture(request: str) -> str:
+    """Décide d'une demande de geste commercial (remise, dédommagement, avoir) pour le client
+    identifié. request : la demande du client en une phrase. Renvoie l'issue à annoncer et les
+    orientations possibles ; ne renvoie aucun critère."""
+
+
+@tool
+def request_handoff(reason: str) -> str:
+    """Transfère la conversation à un conseiller humain. reason : le motif, en une phrase, pour
+    le conseiller. À utiliser quand la documentation ne permet pas de répondre, quand un outil le
+    demande, ou quand la situation dépasse ce que tu peux traiter."""
+
+
+TOOLS = [search_documents, verify_customer, get_customer, get_incidents, propose_appointment,
+         book_appointment, assess_gesture, request_handoff]
