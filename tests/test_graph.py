@@ -132,11 +132,12 @@ def test_answer_with_sources_from_this_turn_passes_the_checks(script, talk, monk
     assert "post_review" in script.calls and store.data["tickets"] == []
 
 
-def test_a_reply_the_documents_do_not_support_becomes_i_do_not_know(script, talk):
+def test_a_reply_the_documents_do_not_support_goes_to_a_human(script, talk):
     script.review = script.review.model_copy(update={"grounded": False})
     script.steps = [answer("Néova ne propose pas Netflix.")]
     state = talk("Netflix est inclus ?")
-    assert state["reply"] == graph.NOT_ESTABLISHED and store.data["tickets"] == []
+    assert state["trace"][-2:] == ["post_review", "handoff"] and len(store.data["tickets"]) == 1
+    assert state["reply"].startswith("transmis") and "Netflix" not in state["reply"]
     assert "Néova ne propose pas Netflix." in script.blocks["post_review"]
 
 
@@ -300,6 +301,18 @@ def test_identification_only_turn_is_reviewed_and_answered(script, talk):
     script.steps = [call("verify_customer", customer_id=CAMILLE[0], phone=CAMILLE[1]), answer("Merci, que puis-je faire pour vous ?")]
     state = talk("NEO-88213 0612840193")
     assert "post_review" in script.calls and state["reply"].startswith("Merci") and store.data["tickets"] == []
+
+
+def test_a_new_customer_starts_from_a_clean_conversation(script, talk):
+    script.steps = [call("verify_customer", customer_id=CAMILLE[0], phone=CAMILLE[1]), answer("Bonjour Camille.")]
+    talk("NEO-88213 0612840193")
+    script.steps = [call("verify_customer", customer_id=AHMED[0], phone=AHMED[1]), answer("Bonjour.")]
+    state = talk("NEO-10467 0778115402")
+    text = " ".join(str(m.content) for m in state["messages"])
+    assert CAMILLE[0] not in text and "Bonjour Camille." not in text and AHMED[0] in text
+    assert state["facts"] == {"client": state["facts"]["client"]} and state["facts"]["client"]["customer_id"] == AHMED[0]
+    assert state["actions"] == ["identité vérifiée"]
+    assert [m.type for m in state["messages"]] == ["human", "ai", "tool", "ai"]
 
 
 def test_post_review_fetches_what_it_needs_then_judges(script, talk, monkeypatch):

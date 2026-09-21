@@ -19,10 +19,10 @@ from datetime import datetime
 from functools import lru_cache
 from typing import Annotated, Literal, TypedDict
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
-from langgraph.graph.message import add_messages
+from langgraph.graph.message import REMOVE_ALL_MESSAGES, add_messages
 from pydantic import BaseModel
 
 from neova import llm
@@ -43,8 +43,6 @@ UNCERTAIN_BOOKING = ("Je n'ai pas pu confirmer la réservation à cause d'un inc
                      "prochain message ; rien n'est confirmé tant que ce n'est pas certain.")
 UNCERTAIN_TICKET = ("Je n'ai pas pu confirmer la transmission de votre demande à un conseiller à cause d'un "
                     "incident technique. Je vérifie à votre prochain message.")
-NOT_ESTABLISHED = ("Je ne sais pas : notre documentation ne me permet pas de vous répondre de façon certaine. "
-                   "Je peux transmettre votre question à un conseiller si vous le souhaitez.")
 REDIRECTS = {"payment_plan": "un échéancier de paiement", "incident_follow_up": "le suivi de l'incident",
              "technician_appointment": "un rendez-vous avec un technicien"}
 WEEKDAYS = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
@@ -173,6 +171,7 @@ def tools(state: State) -> dict:
     for call in state["messages"][-1].tool_calls:
         update["calls"] += 1
         result, changes, route = TOOL_RUNNERS[call["name"]](view, **call["args"])
+        update["messages"][:0] = changes.pop("messages", [])
         view.update(changes)
         update.update(changes)
         update["messages"].append(ToolMessage(result, tool_call_id=call["id"]))
@@ -204,8 +203,9 @@ def post_review(state: State) -> dict:
     if not verdict.can_conclude:
         return to_human(state, "post_review",
                         f"transfert après examen (situations {verdict.matched_items}) : {verdict.reason}")
-    text = draft if verdict.grounded else NOT_ESTABLISHED
-    return visit(state, "post_review", reply=text, messages=[AIMessage(text)], next="finish")
+    if not verdict.grounded:
+        return to_human(state, "post_review", f"réponse non établie par la documentation : {verdict.reason}")
+    return visit(state, "post_review", reply=draft, messages=[AIMessage(draft)], next="finish")
 
 
 def resolve_needs(state: State, needs, documents: str, facts: dict):
@@ -286,6 +286,10 @@ def run_verify(state, customer_id: str, phone: str):
     changes = {"session": client.session, "customer_id": customer["customer_id"], "identity_failures": 0,
                "facts": {**state.get("facts", {}), "client": view},
                "actions": state.get("actions", []) + ["identité vérifiée"]}
+    if state.get("customer_id") not in (None, customer["customer_id"]):
+        changes.update(facts={"client": view}, actions=["identité vérifiée"], gesture=None, proposal=None, proposed=[],
+                       ticket=None, uncertain=None, passages=[],
+                       messages=[RemoveMessage(id=REMOVE_ALL_MESSAGES), HumanMessage(state["message"]), state["messages"][-1]])
     if customer["plan"].startswith("Néova Pro"):
         return (f"Identité vérifiée : le contrat de ce client est professionnel ({customer['plan']}).",
                 changes, None)
