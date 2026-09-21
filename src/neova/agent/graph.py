@@ -73,6 +73,7 @@ class State(TypedDict, total=False):
     actions: list[str]                        # what the agent did, for the ticket
     final: dict | None                        # the reply to check: {"text", "sources" = passages of this turn}
     reason: str                               # why the turn goes to a human
+    review: list[str]                         # the after-review verdict, shown in the chat logs
     calls: int                                # tool calls this turn
     next: str
     reply: str
@@ -196,18 +197,23 @@ def post_review(state: State) -> dict:
         documents = "\n\n".join(f"[{r.chunk.chunk_id}]\n{r.chunk.text}" for r in found)
     context, draft = transcript(state), state["final"]["text"]   # context explains a bare "oui" or identifiers
     verdict = prompts.post_review(state["message"], context, draft, facts, documents)
+    review = []
     if verdict is not None and verdict.needs:
+        review.append(f"demande : {[f'{n.kind} : {n.query}' for n in verdict.needs]}")
         documents, facts = resolve_needs(state, verdict.needs, documents, facts)
         verdict = prompts.post_review(state["message"], context, draft, facts, documents, final=True)
     if verdict is None:
-        return to_human(state, "post_review", "contrôle après examen indisponible")
+        return visit(state, "post_review", review=review, reason="contrôle après examen indisponible", next="handoff")
+    review += [f"situations : {verdict.matched_items} · documents suffisants : {verdict.documents_cover}",
+               f"conditions conseiller : {[(c.condition, c.met) for c in verdict.advisor_conditions]}",
+               f"affirmations non établies : {verdict.unsupported_claims}", f"raison : {verdict.reason}"]
     if not verdict.can_conclude:
-        return to_human(state, "post_review",
-                        f"transfert après examen (situations {verdict.matched_items}) : {verdict.reason}")
+        return visit(state, "post_review", review=review, next="handoff",
+                     reason=f"transfert après examen (situations {verdict.matched_items}) : {verdict.reason}")
     if verdict.unsupported_claims:
-        return to_human(state, "post_review",
-                        f"réponse non établie par la documentation : {' ; '.join(verdict.unsupported_claims)}")
-    return visit(state, "post_review", reply=draft, messages=[AIMessage(draft)], next="finish")
+        return visit(state, "post_review", review=review, next="handoff",
+                     reason=f"réponse non établie par la documentation : {' ; '.join(verdict.unsupported_claims)}")
+    return visit(state, "post_review", review=review, reply=draft, messages=[AIMessage(draft)], next="finish")
 
 
 def resolve_needs(state: State, needs, documents: str, facts: dict):

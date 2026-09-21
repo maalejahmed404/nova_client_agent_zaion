@@ -39,6 +39,8 @@ def show(node: str, update: dict | None) -> None:
     if update.get("reason"):
         line += f" (motif : {update['reason']})"
     typer.secho(line, fg="green")
+    for detail in update.get("review", []):
+        typer.secho(f"      {detail}", fg=(255, 165, 0))
     for m in update.get("messages", []):
         if isinstance(m, AIMessage):
             for call in m.tool_calls:
