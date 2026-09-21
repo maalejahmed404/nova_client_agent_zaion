@@ -4,18 +4,44 @@ A LangGraph agent for a fictional French ISP. It answers in French from the docu
 `corpus/`, reads and writes customer data through its own FastAPI service, books technician
 appointments, and hands over to a human advisor when the internal procedure says so.
 
+## Embeddings: `qwen/qwen3-embedding-8b`
+
+Retrieval is hybrid: BM25 on French-stemmed tokens for exact names, prices and article numbers,
+plus dense vectors for meaning, fused by reciprocal rank. The dense side uses Qwen3-Embedding-8B:
+
+- **French.** It is multilingual by training and ranked first on MTEB-Multilingual at release;
+  many cheap embedding models are English-first and weaker on French paraphrase.
+- **Query instructions.** It takes a task instruction on the query side only
+  (`retrieve the support document section that answers it`). Customers write colloquial French
+  and the documents are formal; the instruction steers the query vector toward document-style
+  sections without re-embedding the corpus.
+- **Cost.** About $0.01 per million tokens. Vectors are cached by content hash in
+  `.cache/embeddings/`, so a rebuild only embeds what changed.
+
+It is not trusted alone: cosine similarity cannot tell answerable from unanswerable questions
+(see Evaluation), so BM25 carries the exact terms and the "no answer" decision is left to an LLM.
+The model is read from `EMBEDDING_MODEL`, and the index refuses to load if it was built with
+another model or other source files.
+
 ## Run it
+
+First run:
 
 ```bash
 cp .env.example .env            # put the OpenRouter key and the model names there
 uv sync
-uv run python -m neova.rag.index --build   # once: parses the corpus, embeds it (a few cents)
+uv run python -m neova.rag.index --build   # parses and embeds the corpus (a few cents)
+```
+
+Then:
+
+```bash
 uv run neova chat               # starts the API in the background and opens the conversation
 ```
 
 `uv run neova api` runs the API alone (docs at http://localhost:8000/docs). In the chat, typing
-a customer's full name from `data/neova_data.json` (e.g. `Patrick Doré`) is a demo shortcut that
-sends their customer number and phone; the agent then verifies them through the API as usual.
+a customer's full name from `data/neova_data.json` (e.g. `Patrick Doré`) sends their customer
+number and phone; the agent then verifies them through the API as usual.
 
 Models (set in `.env`): chat `google/gemini-2.5-flash` with fallback
 `mistralai/mistral-small-3.2-24b-instruct`, embeddings `qwen/qwen3-embedding-8b`, vision
@@ -24,128 +50,118 @@ Models (set in `.env`): chat `google/gemini-2.5-flash` with fallback
 
 ## The graph
 
+```
+precheck ──match──▶ handoff ──▶ END
+   │
+   ▼
+ agent ⇄ tools ──request_handoff──▶ handoff
+   │
+   ▼
+post_review ──human──▶ handoff        otherwise ──▶ END
+```
+
 ![graph](docs/graph.png)
 
-Five nodes. One run per customer message; `MemorySaver` keeps the conversation (messages,
-session, pending proposal, ticket) between messages. Conversations do not survive a restart.
+One run per customer message; `MemorySaver` keeps the conversation (messages, session, pending
+proposal, ticket) between messages. Conversations do not survive a restart.
 
-- **precheck** (LLM + code): the "transfert immédiat" section of the escalation procedure,
-  verbatim. A match, or an error, goes straight to **handoff**, before any identification.
-- **agent ⇄ tools** (ReAct loop): one LLM with `bind_tools` decides which tool to call and when;
-  the `tools` node executes the calls with the state. Tools: `search_documents` (hybrid retrieval,
-  status filter, reference expansion), `verify_customer`, `get_customer`, `get_incidents`,
-  `propose_appointment`, `book_appointment`, `assess_gesture`, `request_handoff`. Reads are free
-  for the agent; the two writes are gated by code (below).
-- **post_review** (LLM + code): the "transfert après examen" section, run when documents or the
-  gesture policy were consulted. The LLM lists the elements of each candidate situation; the code
-  keeps a situation only if every element is established, and transfers only if the documents
-  cannot settle the case ("à traiter en premier lieu, puis transférer").
-- **guard** (code): no sentence of the internal rules in the reply; a number with no tool used at
-  all is refused; a gesture under review ends in a handoff.
-- **handoff** (code + 2 LLM calls): ticket drafted, created through the API with an idempotency
-  key, then the delay the API returned is announced. One ticket per conversation; a failed
-  creation is never announced as a transfer.
+- **precheck**: an LLM checks the "transfert immédiat" section of the escalation procedure,
+  verbatim. A match goes straight to **handoff**, before any identification.
+- **agent ⇄ tools** (ReAct): one LLM with `bind_tools` picks its tools: `search_documents`,
+  `verify_customer`, `get_customer`, `get_incidents`, `propose_appointment`, `book_appointment`,
+  `assess_gesture`, `request_handoff`. Reads are free; the writes are gated by code:
+  `propose_appointment` picks the slot itself, `book_appointment` runs only if a proposal is
+  pending and a structured check reads the customer's message as a clear yes, a 500 during the
+  write is replayed with the same idempotency key on the next message, and the confirmation
+  sentence is written from the API result.
+- **post_review**: an LLM checks every reply against the "transfert après examen" section before
+  the customer reads it. It may ask once for a missing document or customer fact, which code
+  fetches; it transfers only if the documents cannot settle the case.
+- **handoff**: the ticket is drafted, created with an idempotency key, then the delay the API
+  returned is announced. One ticket per conversation; a failed creation is never announced.
 
-Writes, gated by code: `propose_appointment` picks the slot itself (the LLM never sees a slot it
-has not proposed) and stores the proposal with a fresh idempotency key; `book_appointment` runs
-only if a proposal is pending and a structured check reads the customer's last message as a clear
-yes; a 500 during the write leaves an "uncertain" marker, replayed with the same key on the next
-message; the confirmation sentence is written by code from the API result, never by the LLM.
+The decision to hand over is made by an LLM: `precheck` before the work, the agent during it,
+`post_review` after it. Tools return facts ("the contract is professional", "verification
+refused a second time") and the agent decides. Code hands over in three cases where no LLM
+verdict can be trusted: the model is down after retries, the loop passes its step cap, or a
+check returns an invalid verdict (an item number outside the procedure, or evidence not found in
+the customer's words).
 
 ## Evaluation
 
-Two hand-written sets in `eval/`, run with the real models. Numbers below are from the last runs.
+A hand-written set in `eval/`, run with the real models: 45 questions written from the PDFs, 37
+with an answer in the corpus, 8 close to the topics but without one
+(`uv run python -m neova.rag.eval_retrieval`).
 
-**Retrieval** (`uv run python -m neova.rag.eval_retrieval`), 45 questions written from the
-PDFs: 37 with an answer in the corpus, 8 close to the topics but without one.
+**Retrieval** (the `search_documents` path the agent uses):
 
 | Measure | Result |
 |---|---|
 | Full-evidence recall: every section the answer needs is in the context | **0.97** (36/37) |
 | MRR of the first expected section | 0.84 |
 | Archive (deprecated) sections returned without a reason | **0** |
-| Questions FAQ asked with other words than the document, section found | 10/10 |
-| Table questions, correct value in the LLM answer | 14/15 (the miss is the retrieval miss below) |
-| "Not in corpus" said by the answer step on the 8 unanswerable questions | **8/8** |
-| Answerable questions refused | 4/37: one retrieval miss, one needing the customer's contract data, one genuine caution on the promo-vs-grid price, one real error (Pro offers) |
+| FAQ questions asked in other words than the document, section found | 10/10 |
+
+**Answer step** (offline, `rag/answer.py`, not the agent's path). The graph writes its own
+replies; these rows measure what the retrieved context supports through a reference answer step,
+not the agent.
+
+| Measure | Result |
+|---|---|
+| Table questions, correct value in the answer | 14/15 (the miss is the retrieval miss above) |
+| "Not in corpus" on the 8 unanswerable questions | **8/8** |
+| Answerable questions refused | 4/37: one retrieval miss, one needing contract data, one caution on promo vs. grid price, one real error (Pro offers) |
 
 Best cosine similarity alone cannot separate the two groups: a threshold above every
-unanswerable question (0.703) would also reject 11 answerable ones. The decision is therefore
-left to the answer step, which must quote its sources. Adding an LLM-written sentence version of
-each table to the index raised recall from 0.94 to 0.97 (11 calls, under one cent); a second
-prompt asking for customer-style descriptions did worse (0.95) and was reverted.
+unanswerable question (0.703) would also reject 11 answerable ones. Adding an LLM-written
+sentence version of each table to the index raised recall from 0.94 to 0.97; a second prompt
+asking for customer-style descriptions did worse (0.95) and was reverted.
 
-**Conversations** (`uv run python -m neova.agent.eval_graph`), 32 scripted conversations run
-with the real models and the real API, checked on the API's records (tickets, bookings) and on
-what the customer read: **32/32** on the last run, after four runs of fixes (14 → 17 → 20 → 24 →
-32/32 with 8 cases added from manual testing). Cases: the 7 immediate-handoff situations and the
-number-portability trap; a question with no answer; current prices against the archive trap; an
-ambiguous question; identification then resumption, identifiers typed unasked, switching
-customer; payment plan for three balances (0 €, 39,99 €, 61,98 €); the gesture for Camille and
-for a customer with unpaid bills; booking with yes / no / another slot / a question during
-confirmation / no technical reason / an outage in the zone / a second appointment; the API in
-chaos; a prompt injection; greetings and a message after a transfer.
-
-Spend so far: about $2.30 of the $10, coding assistant included; a full conversation run costs
-about 7 cents.
+Spend so far: about $2.92 of the $10, coding assistant included.
 
 ## Three design decisions
 
-**1. The LLM chooses its tools; the code owns the writes.** *This decision was revised.* The
-first version had a planner node deciding route, identification and clarification before any
-lookup, and only code calling the API: the argument was that validation, confirmation and
-idempotent replay of the state-changing action must not depend on a model. That argument was
-right about writes and wrong about reads. Manual testing produced requests the planner could not
+**1. The LLM chooses its tools; the code owns the writes.** *Revised.* The first version had a
+planner node deciding route, identification and clarification before any lookup. That was right
+about writes and wrong about reads: manual testing produced requests the planner could not
 classify without information it did not have yet (a greeting, "quels sont les autres créneaux",
-a decoder-TV request, identifiers typed unasked), and each fix added a node. The rewrite keeps
-the guarantees where they always lived, in code around the writes (explicit yes, stored proposal,
-idempotency key, replay, one ticket, source and leak checks), and lets the agent call the read
-tools freely. *Traded away:* determinism of the path. The model can take a wrong turn; the safety
-net is that a wrong turn ends in a handoff, never in an invented answer or an unconfirmed action,
-and the evaluation measures it.
+identifiers typed unasked), and each fix added a node. The rewrite keeps the guarantees in code
+around the writes (explicit yes, stored proposal, idempotency key, replay, one ticket) and lets
+the agent call the read tools freely. *Traded away:* determinism of the path. A wrong turn ends
+in a handoff, never in an invented answer or an unconfirmed action.
 
 **2. Internal documents are prompt context for decision nodes, never retrieval material.**
 The two internal PDFs (escalation procedure, commercial-gesture policy) are excluded from the
-index by their own `audience: internal` header. At build time their sections are copied verbatim
-into five static templates (`agent/templates/`), one per node that needs them; the node's output is
-a closed schema (situation numbers, condition statuses), never free text for the customer. The
-answer generator never sees these files, so their thresholds cannot leak. *Traded away:* the
-model applies numeric rules ("48 h", "6 mois") itself, which is less deterministic than code. The
-code enforces what the data settles (an unavailable gesture history can never yield "eligible", a
-positive balance can never be "no unpaid balance"), and the policy numbers stay out of the code.
+index by their own `audience: internal` header. `agent/build_prompts.py` copies their sections
+verbatim into five static templates, one per decision node; each node's output is a closed
+schema (situation numbers, condition statuses). The agent never sees these rules, only the
+decision nodes do. *Traded away:* the model applies numeric rules ("48 h", "6 mois") itself.
+Code overrides what the data settles (an unavailable gesture history can never yield
+"eligible", a positive balance can never be "no unpaid balance").
 
 **3. Contradictions are resolved by document status before search, not by the model.**
 Each chunk carries metadata read from its own document: status, dates, offer window. The only
 contradiction in the corpus (the 2024 promo prices vs. the 2026 grid) is handled by filtering
 `deprecated` chunks out of every search; the archive is searched only for an explicit historical
-question or a customer whose contract started inside the offer window, and it is then shown with
-an ARCHIVE banner. Retrieval is one chunk per section, tables kept as `column : value` records.
-*Traded away:* a future obsolete document without a status header would not be filtered; the
-rule is only as good as the documents' own metadata. A generic conflict detector was considered
-and rejected as complexity without a case to exercise it.
+question or a customer whose contract started inside the offer window, and is then shown with an
+ARCHIVE banner. *Traded away:* a future obsolete document without a status header would not be
+filtered.
 
 ## What's broken or unfinished
 
-- A customer record in the dataset is inconsistent (balance 39,99 € vs. an unpaid invoice of
-  52,49 €); the agent answers from one of the two without flagging it.
+- The agent has no automated end-to-end evaluation: only retrieval is measured, and the graph is
+  covered by offline tests with a scripted model.
+- A customer record is inconsistent (balance 39,99 € vs. an unpaid invoice of 52,49 €); the agent
+  answers from one of the two without flagging it.
 - A request the documents reserve to an advisor (e.g. a payment plan above the threshold) is
   transferred without first restating the documented rule to the customer.
-- The evaluation checks routes, side effects and forbidden content, not the wording quality of
-  the answers; 32 cases written by the author are an optimistic sample.
 - The FAQ says technicians work Tuesday to Saturday; the API offers a Monday slot. The API is
   treated as the system of record.
-- The API is a demo backend: JSON file persistence, one process, in-memory sessions without
-  expiry, admin routes without authentication.
-- Ingestion limits, none hit by this corpus: table detection relies on the PDFs' coloured header
-  row; a table split across two pages is not handled; only numbered references ("article 12")
-  become links, so "l'indemnité prévue aux CGV" and a "Voir ci-dessous" cell create none and the
-  linked section must be found by search alone.
 
 ## With two more days
 
-1. Judge the answers themselves (correct value, conditional wording for archives, tone), not
-   only routes and side effects; add cases written by someone other than the author.
+1. An end-to-end evaluation of the agent: scripted conversations checked on the API's records
+   and on what the customer reads, with cases written by someone other than the author.
 2. Persist conversations (`SqliteSaver`) and expire API sessions.
-3. Langfuse tracing per node, with the two evaluations wired in.
-4. Detect inconsistent customer records (balance vs. unpaid invoices) and hand them off instead
-   of answering from one figure.
+3. Langfuse tracing per node, with the evaluations wired in.
+4. Detect inconsistent customer records and hand them off instead of answering from one figure.

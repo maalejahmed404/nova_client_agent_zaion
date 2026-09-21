@@ -1,4 +1,4 @@
-"""The conversation graph, five nodes:
+"""The conversation graph, four LLM-driven steps:
 
     precheck ──match──▶ handoff ──▶ END
        │
@@ -9,12 +9,11 @@
    post_review ──human──▶ handoff ──▶ END
        │
        ▼
-     guard ──▶ END        code: cited sources exist, no internal sentence, gesture under review → handoff
+      END
 
 One run per customer message; the checkpointer keeps the state between messages. Every text the
 customer reads is either the agent's reply after the checks, or a fixed sentence below."""
 import json
-import re
 import uuid
 from datetime import datetime
 from functools import lru_cache
@@ -30,6 +29,7 @@ from neova import llm
 from neova.agent import prompts
 from neova.agent.prompts import data
 from neova.agent.tools import TOOLS, APIError, APIUnavailable, NeovaAPI
+from neova.config import get_settings
 from neova.rag.index import load_index, retrieve
 
 HTTP = None  # httpx client for the API; None means API_BASE_URL (tests plug the in-process app)
@@ -43,8 +43,8 @@ UNCERTAIN_BOOKING = ("Je n'ai pas pu confirmer la réservation à cause d'un inc
                      "prochain message ; rien n'est confirmé tant que ce n'est pas certain.")
 UNCERTAIN_TICKET = ("Je n'ai pas pu confirmer la transmission de votre demande à un conseiller à cause d'un "
                     "incident technique. Je vérifie à votre prochain message.")
-ALREADY_TRANSFERRED = ("Votre demande est déjà transmise à un conseiller, qui vous recontactera {eta}. "
-                       "Il aura l'ensemble de notre échange.")
+NOT_ESTABLISHED = ("Je ne sais pas : notre documentation ne me permet pas de vous répondre de façon certaine. "
+                   "Je peux transmettre votre question à un conseiller si vous le souhaitez.")
 REDIRECTS = {"payment_plan": "un échéancier de paiement", "incident_follow_up": "le suivi de l'incident",
              "technician_appointment": "un rendez-vous avec un technicien"}
 WEEKDAYS = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
@@ -70,7 +70,7 @@ class State(TypedDict, total=False):
     consulted: bool                           # documents or the gesture policy were used this turn
     uncertain: dict | None                    # a write whose result is unknown: {"kind", ...}
     gesture: dict | None                      # last assess_gesture outcome
-    ticket: dict | None                       # the ticket of this conversation (one at most)
+    ticket: dict | None                       # the last ticket created in this conversation
     actions: list[str]                        # what the agent did, for the ticket
     final: dict | None                        # the reply to check: {"text", "sources" = passages of this turn}
     reason: str                               # why the turn goes to a human
@@ -90,9 +90,16 @@ def api(state: State) -> NeovaAPI:
 
 
 def agent_llm(messages):
-    """The one place the agent's LLM is called; tests replace it."""
-    chat = llm.get_chat(callbacks=[llm.UsageLogger()]).bind_tools(TOOLS)
-    return llm.invoke_with_retry(chat, messages)
+    """The one place the agent's LLM is called; tests replace it. A provider failure can come back as
+    a 200 with an empty reply and finish_reason "error", which OpenRouter's model routing does not
+    fall back on, so the fallback model is asked explicitly."""
+    settings = get_settings()
+    for model in (settings.chat_model, settings.chat_model_fallback):
+        chat = llm.get_chat(model, callbacks=[llm.UsageLogger()]).bind_tools(TOOLS)
+        reply = llm.invoke_with_retry(chat, messages)
+        if reply.response_metadata.get("finish_reason") != "error":
+            return reply
+    raise RuntimeError("le modèle et son modèle de secours ont renvoyé une erreur")
 
 
 def when(slot: dict) -> str:
@@ -122,7 +129,7 @@ def to_human(state: State, name: str, reason: str) -> dict:
 
 def precheck(state: State) -> dict:
     message = state["message"]
-    update = {"trace": ["precheck"], "reply": "", "reason": "", "final": None, "calls": 0, "consulted": False,
+    update = {"trace": ["precheck"], "reply": "", "reason": "", "final": None, "calls": 0, "consulted": False, "passages": [],
               "messages": [HumanMessage(message)]}
     verdict = prompts.precheck(message, transcript(state))
     if verdict is None:
@@ -155,8 +162,7 @@ def agent(state: State) -> dict:
     text = (reply.content if isinstance(reply.content, str) else " ".join(map(str, reply.content))).strip()
     if not text:
         return visit(state, "agent", calls=state.get("calls", 0) + 1, next="agent")
-    return visit(state, "agent", final={"text": text, "sources": list(state.get("passages", []))},
-                 next="post_review" if state.get("consulted") else "guard")
+    return visit(state, "agent", final={"text": text, "sources": list(state.get("passages", []))}, next="post_review")
 
 
 def tools(state: State) -> dict:
@@ -177,35 +183,56 @@ def tools(state: State) -> dict:
 
 
 def post_review(state: State) -> dict:
+    """The after-review check reads the list of situations and says what it still needs to judge
+    the candidates; the code fetches it (documents by search, facts from the API) and asks once
+    more. No loop: one round of needs, then a verdict."""
+    facts = dict(state.get("facts", {}))
+    if state.get("gesture"):
+        facts["geste_commercial"] = {k: state["gesture"][k] for k in ("outcome", "redirects")}
     documents = "\n\n".join(index().by_id[i].text for i in state.get("passages", []) if i in index().by_id)
-    verdict = prompts.post_review(state["message"], state.get("facts", {}), documents)
+    if not documents:   # the agent acted without reading: the check reads for it, on the request and the draft reply
+        contract_start = (facts.get("client") or {}).get("contract_start_date")
+        found = retrieve(index(), [state["message"], state["final"]["text"]], contract_start=contract_start)
+        documents = "\n\n".join(f"[{r.chunk.chunk_id}]\n{r.chunk.text}" for r in found)
+    context, draft = transcript(state), state["final"]["text"]   # context explains a bare "oui" or identifiers
+    verdict = prompts.post_review(state["message"], context, draft, facts, documents)
+    if verdict is not None and verdict.needs:
+        documents, facts = resolve_needs(state, verdict.needs, documents, facts)
+        verdict = prompts.post_review(state["message"], context, draft, facts, documents, final=True)
     if verdict is None:
         return to_human(state, "post_review", "contrôle après examen indisponible")
     if not verdict.can_conclude:
         return to_human(state, "post_review",
                         f"transfert après examen (situations {verdict.matched_items}) : {verdict.reason}")
-    return visit(state, "post_review", next="guard")
+    text = draft if verdict.grounded else NOT_ESTABLISHED
+    return visit(state, "post_review", reply=text, messages=[AIMessage(text)], next="finish")
 
 
-def guard(state: State) -> dict:
-    """Code checks on the text the customer will read."""
-    final = state["final"]
-    if not state.get("calls") and not final["sources"] and not state.get("facts") and re.search(r"\d", final["text"]):
-        return to_human(state, "guard", "chiffre avancé sans aucun outil ni source")
-    if prompts.leaked(final["text"]):
-        return to_human(state, "guard", "texte non sûr")
-    if (state.get("gesture") or {}).get("handoff_required"):
-        return to_human(state, "guard", f"geste commercial à examiner : {state['gesture']['note']}")
-    return visit(state, "guard", reply=final["text"], messages=[AIMessage(final["text"])], next="finish")
+def resolve_needs(state: State, needs, documents: str, facts: dict):
+    """Fetches what the check asked for: a search per document need, the customer record and
+    incidents for a fact need (only if the customer is identified; otherwise the fact stays
+    unavailable and the check cannot count it as established)."""
+    contract_start = (facts.get("client") or {}).get("contract_start_date")
+    for need in needs:
+        if need.kind == "document":
+            found = retrieve(index(), [need.query], contract_start=contract_start)
+            documents += "\n\n" + "\n\n".join(f"[{r.chunk.chunk_id}]\n{r.chunk.text}" for r in found)
+        elif state.get("session"):
+            try:
+                customer = api(state).customer()
+                facts["client"] = {k: customer.get(k) for k in CUSTOMER_FIELDS}
+                facts["incidents"] = api(state).incidents(customer["postal_code"])
+            except (APIError, APIUnavailable):
+                facts.setdefault("indisponible", []).append(need.query)
+        else:
+            facts.setdefault("non verifiable, client non identifie", []).append(need.query)
+    return documents, facts
 
 
 def handoff(state: State) -> dict:
-    """Ticket first, then the announcement of the real result. One ticket per conversation; an
-    uncertain creation keeps its content and key so replaying it never creates a second one."""
+    """Ticket first, then the announcement of the real result. One ticket per transfer; an uncertain
+    creation keeps its content and key so replaying it never creates a second one."""
     uncertain = state.get("uncertain") or {}
-    if state.get("ticket") and uncertain.get("kind") != "ticket":
-        text = ALREADY_TRANSFERRED.format(eta=state["ticket"]["callback_eta"])
-        return visit(state, "handoff", reply=text, messages=[AIMessage(text)], next="finish")
     if uncertain.get("kind") == "ticket":
         ticket, key, reason = uncertain["ticket"], uncertain["key"], uncertain["reason"]
     else:
@@ -249,18 +276,19 @@ def run_verify(state, customer_id: str, phone: str):
     except APIError:
         failures = state.get("identity_failures", 0) + 1
         if failures >= 2:
-            return "Vérification refusée deux fois.", {"identity_failures": failures,
-                                                       "reason": "identification impossible après deux essais"}, "handoff"
+            return ("Vérification refusée une deuxième fois : n'insistez pas, transférez à un conseiller "
+                    "(request_handoff).", {"identity_failures": failures}, None)
         return "Vérification refusée : numéro client ou téléphone incorrect. Demandez-les à nouveau.", \
             {"identity_failures": failures}, None
     except APIUnavailable:
-        return "API indisponible.", {"reason": "API indisponible pendant l'identification"}, "handoff"
+        return "Service indisponible : l'identité ne peut pas être vérifiée pour le moment.", {}, None
     view = {k: customer.get(k) for k in CUSTOMER_FIELDS}
     changes = {"session": client.session, "customer_id": customer["customer_id"], "identity_failures": 0,
                "facts": {**state.get("facts", {}), "client": view},
                "actions": state.get("actions", []) + ["identité vérifiée"]}
     if customer["plan"].startswith("Néova Pro"):
-        return "Contrat professionnel.", {**changes, "reason": "contrat professionnel"}, "handoff"
+        return (f"Identité vérifiée : le contrat de ce client est professionnel ({customer['plan']}).",
+                changes, None)
     return (f"Identité vérifiée. Dossier : {json.dumps(view, ensure_ascii=False)}\n"
             "Reprenez maintenant la demande initiale du client avec les outils nécessaires, dans ce même tour."), changes, None
 
@@ -271,7 +299,7 @@ def run_get_customer(state):
     try:
         customer = api(state).customer()
     except APIUnavailable:
-        return "API indisponible.", {"reason": "dossier client indisponible"}, "handoff"
+        return "Service indisponible : le dossier ne peut pas être lu pour le moment.", {}, None
     view = {k: customer.get(k) for k in CUSTOMER_FIELDS}
     facts = {**state.get("facts", {}), "client": view}
     return json.dumps(view, ensure_ascii=False), {"facts": facts}, None
@@ -284,7 +312,7 @@ def run_get_incidents(state):
         postal_code = api(state).customer()["postal_code"]
         incidents = api(state).incidents(postal_code)
     except APIUnavailable:
-        return "API indisponible.", {"reason": "incidents indisponibles"}, "handoff"
+        return "Service indisponible : les incidents ne peuvent pas être lus pour le moment.", {}, None
     facts = {**state.get("facts", {}), "incidents": incidents}
     return json.dumps(incidents, ensure_ascii=False) or "Aucun incident.", {"facts": facts}, None
 
@@ -312,9 +340,9 @@ def run_propose(state, reason: str, override_reason: str | None = None, another_
             text = (f"Proposition prête : {when(proposal['slot'])}. Frais : {proposal['cost_notice']} "
                     "Transmettez ces informations au client et demandez-lui de confirmer (oui / non).")
             return text, {"proposal": {"proposal": proposal, "key": str(uuid.uuid4())},
-                          "proposed": skipped + [slot["slot_id"]]}, None
+                          "proposed": skipped + [slot["slot_id"]], "consulted": True}, None
     except APIUnavailable:
-        return "API indisponible.", {"reason": "API indisponible pendant la proposition"}, "handoff"
+        return "Service indisponible : aucun créneau ne peut être proposé pour le moment.", {"proposal": None}, None
     return "Aucun autre créneau disponible dans la zone du client.", {"proposal": None}, None
 
 
@@ -331,7 +359,7 @@ def book(state, proposal: dict, key: str, attempts: int = 0) -> dict:
         booked = api(state).book_appointment(proposal["proposal_id"], key)
     except APIUnavailable:
         if attempts + 1 >= 3:
-            return {"reason": "réservation non confirmée après trois essais", "next": "handoff"}
+            return {"booking_error": "réservation non confirmée après trois essais", "proposal": None, "uncertain": None}
         return {"reply": UNCERTAIN_BOOKING, "messages": [AIMessage(UNCERTAIN_BOOKING)], "next": "finish",
                 "uncertain": {"kind": "booking", "proposal": proposal, "key": key, "attempts": attempts + 1}}
     except APIError as error:
@@ -362,13 +390,16 @@ def run_gesture(state, request: str):
         facts = changes.get("facts", facts)
     verdict = prompts.gesture(request, facts)
     if verdict is None:
-        return "Décision indisponible.", {"reason": "décision de geste commercial indisponible"}, "handoff"
+        return "Décision indisponible pour le moment : transférez à un conseiller (request_handoff).", {}, None
+    if not verdict.is_gesture_request and not verdict.out_of_scope:
+        return ("Ce n'est pas une demande de geste commercial : traitez-la avec search_documents et le dossier du client.",
+                {"facts": facts}, None)
     redirects = [REDIRECTS[r] for r in verdict.redirect_to]
     outcome = {"outcome": verdict.customer_outcome, "redirects": redirects,
                "handoff_required": verdict.decision == "needs_review", "note": verdict.internal_note}
     if outcome["handoff_required"]:
-        return "Issue : examen par un conseiller.", {"gesture": outcome, "facts": facts,
-                                                     "reason": f"geste commercial à examiner : {verdict.internal_note}"}, "handoff"
+        return ("Issue : ce geste doit être examiné par un conseiller. Transférez la demande (request_handoff) "
+                "sans annoncer de geste au client.", {"gesture": outcome, "facts": facts, "consulted": True}, None)
     text = "Issue : geste non accordé." + (f" Orientations à proposer : {', '.join(redirects)}." if redirects else "")
     return text, {"gesture": outcome, "facts": facts, "consulted": True}, None
 
@@ -385,17 +416,16 @@ TOOL_RUNNERS = {
 
 ROUTES = {
     "precheck": ["handoff", "agent", "finish"],
-    "agent": ["tools", "agent", "post_review", "guard", "handoff"],
+    "agent": ["tools", "agent", "post_review", "handoff"],
     "tools": ["agent", "handoff", "finish"],
-    "post_review": ["guard", "handoff"],
-    "guard": ["finish", "handoff"],
+    "post_review": ["finish", "handoff"],
     "handoff": ["finish"],
 }
 
 
 def build(checkpointer=None):
     graph = StateGraph(State)
-    for node in (precheck, agent, tools, post_review, guard, handoff, finish):
+    for node in (precheck, agent, tools, post_review, handoff, finish):
         graph.add_node(node.__name__, node)
     graph.add_edge(START, "precheck")
     for name, targets in ROUTES.items():
