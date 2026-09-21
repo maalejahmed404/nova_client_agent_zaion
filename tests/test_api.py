@@ -265,6 +265,21 @@ def test_ticket_idempotent_replay():
     assert conflict.status_code == 409
 
 
+@pytest.mark.parametrize("at, wording, by", [
+    ("2026-08-25T10:00:00+02:00", "sous 45 minutes", "2026-08-25T10:45:00+02:00"),   # Tuesday
+    ("2026-08-25T20:00:00+02:00", "le lendemain matin", "2026-08-26T09:00:00+02:00"),
+    ("2026-08-28T19:00:00+02:00", "le lendemain matin", "2026-08-29T09:00:00+02:00"),  # Friday evening: the procedure's wording, literally
+    ("2026-08-29T10:00:00+02:00", "le lendemain matin", "2026-08-30T09:00:00+02:00"),  # Saturday
+])
+def test_ticket_callback_uses_the_procedure_wording(monkeypatch, at, wording, by):
+    import neova.api.app as app_module
+    from datetime import datetime
+    monkeypatch.setattr(app_module, "now", lambda: datetime.fromisoformat(at))
+    body = client.post("/tickets", json=TICKET).json()
+    assert (body["callback_eta"], body["callback_by"]) == (wording, by)
+    stored = client.get("/admin/tickets").json()[0]
+    assert (stored["callback_eta"], stored["callback_by"]) == (wording, by)
+
 # --- regressions: idempotency bound to identity, ticket creation atomic ---
 
 def test_replay_is_bound_to_the_customer_who_used_the_key():

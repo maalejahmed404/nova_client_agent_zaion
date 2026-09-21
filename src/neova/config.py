@@ -12,6 +12,10 @@ CORPUS_DIR = PROJECT_ROOT / "corpus"
 CACHE_DIR = PROJECT_ROOT / ".cache"
 LOGS_DIR = PROJECT_ROOT / "logs"
 
+# Assumption, not in the escalation procedure: it gives the delays, not the opening hours.
+BUSINESS_HOURS = (9, 18)
+BUSINESS_DAYS = range(0, 5)
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(

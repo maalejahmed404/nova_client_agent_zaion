@@ -7,7 +7,8 @@ from neova.api.models import (
     ProposalRequest, ProposalResponse, Appointment,
 )
 from neova.api.store import store, proposal_id, body_hash
-from neova.config import DATA_DIR, now, clock_mode, get_settings
+from neova.config import BUSINESS_DAYS, BUSINESS_HOURS, DATA_DIR, now, clock_mode, get_settings
+from datetime import datetime, timedelta
 import random
 import string
 import json
@@ -36,6 +37,15 @@ class TicketRequest(BaseModel):
 
 class ChaosRequest(BaseModel):
     rate: float
+
+def callback_eta(at: datetime) -> tuple[datetime, str]:
+    """The delay promised in the ticket and the wording of the escalation procedure, which only
+    knows "sous 45 minutes" in business hours and "le lendemain matin" otherwise."""
+    open_hour, close_hour = BUSINESS_HOURS
+    if at.weekday() in BUSINESS_DAYS and open_hour <= at.hour < close_hour:
+        return at + timedelta(minutes=45), "sous 45 minutes"
+    next_morning = (at + timedelta(days=1)).replace(hour=open_hour, minute=0, second=0, microsecond=0)
+    return next_morning, "le lendemain matin"
 
 cost_notice_text = "L'intervention est gratuite si la cause se situe en amont de la prise optique ou si l'équipement fourni par Néova est défectueux ; elle est facturée 69 € si le technicien constate une dégradation imputable au client."
 
@@ -273,7 +283,6 @@ def create_ticket(
     customer_id = customer.customer_id if customer else None
     body = req.model_dump()
     scope = f"tickets:{customer_id or 'anon'}"
-    from neova.policies import callback_eta
 
     # One critical section: replay check, creation and persistence together, so two concurrent
     # retries cannot both miss the replay and create two tickets.
@@ -288,7 +297,7 @@ def create_ticket(
                 content={"error": "Invalid category", "detail": "Catégorie invalide."}
             )
         ticket_id = random_id("TKT-")
-        eta = callback_eta(now())
+        callback_by, eta = callback_eta(now())
         store.data["tickets"].append({
             "ticket_id": ticket_id,
             "customer_id": customer_id,
@@ -298,8 +307,9 @@ def create_ticket(
             "urgency": req.urgency,
             "created_at": now().isoformat(),
             "callback_eta": eta,
+            "callback_by": callback_by.isoformat(),
         })
-        response_body = {"ticket_id": ticket_id, "callback_eta": eta, "customer_id": customer_id}
+        response_body = {"ticket_id": ticket_id, "callback_eta": eta, "callback_by": callback_by.isoformat(), "customer_id": customer_id}
         if idempotency_key:
             remember_response(scope, idempotency_key, body, response_body)
         store.write()
