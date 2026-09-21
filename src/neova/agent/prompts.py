@@ -7,7 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from neova import llm
 from neova.rag.ingest import fold
@@ -41,10 +41,17 @@ class Condition(BaseModel):
     met: Literal["yes", "no", "unknown"]
 
 
+class Need(BaseModel):
+    kind: Literal["document", "fact"]
+    query: str
+
+
 class PostReviewVerdict(BaseModel):
     candidates: list[Candidate]
+    needs: list[Need]             # what is missing to judge a candidate: a document search or a customer fact
     documents_cover: bool
     advisor_conditions: list[Condition]
+    grounded: bool                # every statement of the draft reply is backed by the documents or the facts
     reason: str
 
     @property
@@ -54,17 +61,24 @@ class PostReviewVerdict(BaseModel):
 
     @property
     def can_conclude(self) -> bool:
-        """An advisor is needed only when no documented condition for it is known to fail."""
+        """Transfer only for an established situation the documents cannot settle, or when the documents
+        send the request to an advisor and no documented condition for it is known to fail."""
         advisor_needed = bool(self.advisor_conditions) and all(c.met != "no" for c in self.advisor_conditions)
-        return self.documents_cover and not advisor_needed
+        return (not self.matched_items or self.documents_cover) and not advisor_needed
 
 
 class GestureVerdict(BaseModel):
+    is_gesture_request: bool      # false: the customer asks something else (payment plan, dispute, information)
     decision: Literal["eligible", "not_eligible", "needs_review"]
     condition_status: list[Literal["met", "not_met", "unknown"]]
     cap_row: int | None
     escalate_n2: bool
     out_of_scope: bool
+
+    @field_validator("cap_row", mode="before")
+    @classmethod
+    def _row_or_none(cls, value):
+        return value if isinstance(value, int) else None   # models write "aucune" or "" when no cap applies
     internal_note: str
     customer_outcome: Literal["credit_next_invoice", "refused", "under_review"]
     redirect_to: list[Literal["payment_plan", "incident_follow_up", "technician_appointment"]]
@@ -113,9 +127,14 @@ def precheck(message: str, context: str = "") -> PrecheckVerdict | None:
     return v
 
 
-def post_review(message: str, facts: dict, documents: str) -> PostReviewVerdict | None:
-    v = ask("post_review", PostReviewVerdict, data("message_client", message), data("faits", facts),
-             data("documents", documents or "(aucun)"))
+def post_review(message: str, context: str, draft: str, facts: dict, documents: str,
+                final: bool = False) -> PostReviewVerdict | None:
+    """final=True is the second pass, after the missing pieces were fetched: the verdict must be given."""
+    blocks = [data("contexte", context or "(aucun)"), data("message_client", message),
+              data("reponse_proposee", draft), data("faits", facts), data("documents", documents or "(aucun)")]
+    if final:
+        blocks.append("Toutes les pièces disponibles ont été réunies : rends le verdict, needs doit rester vide.")
+    v = ask("post_review", PostReviewVerdict, *blocks)
     if v is None or any(not 1 <= c.item <= item_count("post_review") for c in v.candidates):
         return None
     return v
