@@ -29,7 +29,12 @@ dependencies = [
 neova = "neova.cli:app"
 
 [dependency-groups]
-dev = ["pytest>=8", "respx>=0.21", "ruff>=0.5"]
+dev = [
+    "ipykernel>=7.3.0",
+    "pytest>=8",
+    "respx>=0.21",
+    "ruff>=0.5",
+]
 
 [build-system]
 requires = ["hatchling"]
