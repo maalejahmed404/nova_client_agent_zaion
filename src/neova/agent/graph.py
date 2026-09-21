@@ -29,10 +29,11 @@ from neova import llm
 from neova.agent import prompts
 from neova.agent.prompts import data
 from neova.agent.tools import TOOLS, APIError, APIUnavailable, NeovaAPI
-from neova.config import get_settings
+from neova.config import LOGS_DIR, get_settings
 from neova.rag.index import load_index, retrieve
 
 HTTP = None  # httpx client for the API; None means API_BASE_URL (tests plug the in-process app)
+TICKETS_DIR = LOGS_DIR / "tickets"   # one file per ticket, for reviewing transfers by hand
 MAX_TOOL_CALLS = 8
 HISTORY_MESSAGES = 12
 CUSTOMER_FIELDS = ("customer_id", "plan", "monthly_price", "contract_start_date", "engagement_months",
@@ -203,8 +204,9 @@ def post_review(state: State) -> dict:
     if not verdict.can_conclude:
         return to_human(state, "post_review",
                         f"transfert après examen (situations {verdict.matched_items}) : {verdict.reason}")
-    if not verdict.grounded:
-        return to_human(state, "post_review", f"réponse non établie par la documentation : {verdict.reason}")
+    if verdict.unsupported_claims:
+        return to_human(state, "post_review",
+                        f"réponse non établie par la documentation : {' ; '.join(verdict.unsupported_claims)}")
     return visit(state, "post_review", reply=draft, messages=[AIMessage(draft)], next="finish")
 
 
@@ -246,6 +248,10 @@ def handoff(state: State) -> dict:
     except APIError:
         return visit(state, "handoff", reply=prompts.NO_TICKET_MESSAGE, messages=[AIMessage(prompts.NO_TICKET_MESSAGE)],
                      uncertain=None, next="finish")
+    TICKETS_DIR.mkdir(parents=True, exist_ok=True)
+    (TICKETS_DIR / f"{created['ticket_id']}.json").write_text(json.dumps(
+        {**created, **ticket, "reason": reason, "trace": state.get("trace", []), "conversation": transcript(state)},
+        ensure_ascii=False, indent=2), encoding="utf-8")
     text = prompts.handoff_message(state["message"], created["callback_eta"])
     return visit(state, "handoff", reply=text, messages=[AIMessage(text)], ticket=created, uncertain=None, proposal=None,
                  actions=state.get("actions", []) + [f"ticket créé ({created['ticket_id']})"], next="finish")

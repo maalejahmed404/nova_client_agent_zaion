@@ -92,7 +92,7 @@ def test_handoff_message_never_claims_a_ticket_that_does_not_exist():
 
 
 def test_a_situation_counts_only_if_every_element_is_established():
-    verdict = prompts.PostReviewVerdict(documents_cover=True, needs=[], advisor_conditions=[], grounded=True, reason="", candidates=[
+    verdict = prompts.PostReviewVerdict(documents_cover=True, needs=[], advisor_conditions=[], unsupported_claims=[], reason="", candidates=[
         {"item": 6, "elements": [{"element": "panne persistante", "established": True},
                                  {"element": "intervention technicien déjà réalisée", "established": False}]},
         {"item": 3, "elements": [{"element": "demande d'échéancier de paiement", "established": True}]},
@@ -103,11 +103,11 @@ def test_a_situation_counts_only_if_every_element_is_established():
 
 def test_an_advisor_is_needed_only_if_no_documented_condition_fails():
     def verdict(*met):
-        return prompts.PostReviewVerdict(candidates=[], needs=[], documents_cover=True, grounded=True, reason="",
+        return prompts.PostReviewVerdict(candidates=[], needs=[], documents_cover=True, unsupported_claims=[], reason="",
                                          advisor_conditions=[{"condition": f"c{i}", "met": m} for i, m in enumerate(met)])
     assert verdict().can_conclude                       # no advisor asked by the documents
     assert verdict("no", "yes").can_conclude            # the customer does not qualify: documented answer
     assert not verdict("yes", "unknown").can_conclude   # qualifies or unknown: advisor
-    assert prompts.PostReviewVerdict(candidates=[], needs=[], documents_cover=False, advisor_conditions=[], grounded=True, reason="").can_conclude
+    assert prompts.PostReviewVerdict(candidates=[], needs=[], documents_cover=False, advisor_conditions=[], unsupported_claims=[], reason="").can_conclude
     matched = [{"item": 2, "elements": [{"element": "e", "established": True}]}]
-    assert not prompts.PostReviewVerdict(candidates=matched, needs=[], documents_cover=False, advisor_conditions=[], grounded=True, reason="").can_conclude
+    assert not prompts.PostReviewVerdict(candidates=matched, needs=[], documents_cover=False, advisor_conditions=[], unsupported_claims=[], reason="").can_conclude

@@ -1,5 +1,6 @@
 """Graph routes and tool-call order, offline: a scripted agent LLM that emits tool calls, scripted
 verdicts for the checks, and the real API in process."""
+import json
 import uuid
 from types import SimpleNamespace
 
@@ -34,7 +35,7 @@ class Script:
         self.confirmation = graph.Confirmation(decision="yes", preference="")
         self.gesture = None
         self.ticket = SimpleNamespace(category="technical", motif="motif", summary="résumé", actions_taken=[], urgency="normal")
-        self.review = prompts.PostReviewVerdict(candidates=[], needs=[], documents_cover=True, advisor_conditions=[], grounded=True, reason="")
+        self.review = prompts.PostReviewVerdict(candidates=[], needs=[], documents_cover=True, advisor_conditions=[], unsupported_claims=[], reason="")
 
     def agent(self, messages):
         assert self.steps, "the scripted agent has no step left"
@@ -51,8 +52,9 @@ class Script:
 
 
 @pytest.fixture
-def script(monkeypatch):
+def script(monkeypatch, tmp_path):
     s = Script()
+    monkeypatch.setattr(graph, "TICKETS_DIR", tmp_path)
     monkeypatch.setattr(graph, "agent_llm", s.agent)
     monkeypatch.setattr(prompts, "ask", s.ask)
     monkeypatch.setattr(prompts, "handoff_message", lambda message, eta: s.calls.append("handoff_message") or f"transmis, rappel {eta}")
@@ -100,6 +102,14 @@ def test_agent_can_request_a_handoff_and_the_reason_reaches_the_ticket(script, t
     assert store.data["tickets"][0]["actions_taken"] == []
 
 
+def test_each_ticket_is_saved_with_its_reason_and_the_conversation(script, talk):
+    script.precheck = [3]
+    talk("Mon père est décédé")
+    saved = json.loads((graph.TICKETS_DIR / f"{store.data['tickets'][0]['ticket_id']}.json").read_text(encoding="utf-8"))
+    assert "transfert immédiat" in saved["reason"] and "Mon père est décédé" in saved["conversation"]
+    assert saved["trace"] == ["precheck"] and saved["category"] == "technical"
+
+
 def test_failed_ticket_never_claims_a_transfer(script, talk):
     script.precheck = [1]
     script.ticket = SimpleNamespace(category="not-a-category", motif="m", summary="s", actions_taken=[], urgency="normal")
@@ -133,7 +143,7 @@ def test_answer_with_sources_from_this_turn_passes_the_checks(script, talk, monk
 
 
 def test_a_reply_the_documents_do_not_support_goes_to_a_human(script, talk):
-    script.review = script.review.model_copy(update={"grounded": False})
+    script.review = script.review.model_copy(update={"unsupported_claims": ["Néova ne propose pas Netflix."]})
     script.steps = [answer("Néova ne propose pas Netflix.")]
     state = talk("Netflix est inclus ?")
     assert state["trace"][-2:] == ["post_review", "handoff"] and len(store.data["tickets"]) == 1
@@ -163,7 +173,7 @@ def test_post_review_can_send_an_answer_to_a_human(script, talk, monkeypatch):
     monkeypatch.setattr(graph, "retrieve", lambda *a, **k: [SimpleNamespace(chunk=chunk)])
     monkeypatch.setattr(graph, "index", lambda: SimpleNamespace(by_id={"faq#x": chunk}))
     matched = [{"item": 2, "elements": [{"element": "panne après intervention", "established": True}]}]
-    script.review = prompts.PostReviewVerdict(candidates=matched, needs=[], documents_cover=False, advisor_conditions=[], grounded=True, reason="pas couvert")
+    script.review = prompts.PostReviewVerdict(candidates=matched, needs=[], documents_cover=False, advisor_conditions=[], unsupported_claims=[], reason="pas couvert")
     script.steps = [call("search_documents", question="q"), answer("réponse", [])]
     assert talk("question")["reply"].startswith("transmis")
 
@@ -322,9 +332,9 @@ def test_post_review_fetches_what_it_needs_then_judges(script, talk, monkeypatch
     monkeypatch.setattr(graph, "index", lambda: SimpleNamespace(by_id={"cgv#art13": chunk}))
     exemption = [{"item": 4, "elements": [{"element": "motif légitime invoqué", "established": True}]}]
     verdicts = iter([
-        prompts.PostReviewVerdict(candidates=exemption, documents_cover=False, advisor_conditions=[], grounded=True, reason="",
+        prompts.PostReviewVerdict(candidates=exemption, documents_cover=False, advisor_conditions=[], unsupported_claims=[], reason="",
                                   needs=[{"kind": "document", "query": "cas d'exonération des frais de résiliation"}]),
-        prompts.PostReviewVerdict(candidates=exemption, documents_cover=True, grounded=True, reason="relève d'un conseiller", needs=[],
+        prompts.PostReviewVerdict(candidates=exemption, documents_cover=True, unsupported_claims=[], reason="relève d'un conseiller", needs=[],
                                   advisor_conditions=[{"condition": "examen d'un justificatif", "met": "unknown"}]),
     ])
     original = script.ask

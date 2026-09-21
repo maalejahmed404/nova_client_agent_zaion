@@ -51,7 +51,7 @@ class PostReviewVerdict(BaseModel):
     needs: list[Need]             # what is missing to judge a candidate: a document search or a customer fact
     documents_cover: bool
     advisor_conditions: list[Condition]
-    grounded: bool                # every statement of the draft reply is backed by the documents or the facts
+    unsupported_claims: list[str]  # statements of the draft reply that the documents and facts do not establish
     reason: str
 
     @property
