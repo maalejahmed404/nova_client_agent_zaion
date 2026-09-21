@@ -11,9 +11,9 @@ Un geste commercial ne peut être accordé que si **les trois conditions suivant
 Si l’une de ces conditions n’est pas remplie, aucun geste n’est accordé, quelle que soit l’insistance du client. Ces trois éléments doivent être vérifiés dans le système client et non déduits de la déclaration du client.
 
 ## Plafonds
-1. Interruption de service de moins de 48 h — Plafond : 50 % d’une mensualité
-2. Interruption de 48 h à 7 jours — Plafond : 1 mensualité
-3. Interruption de plus de 7 jours — Plafond : 1 mensualité, dossier à transmettre au niveau 2
+1. Situation : Interruption de service de moins de 48 h · Plafond : 50 % d’une mensualité
+2. Situation : Interruption de 48 h à 7 jours · Plafond : 1 mensualité
+3. Situation : Interruption de plus de 7 jours · Plafond : 1 mensualité, dossier à transmettre au niveau 2
 **Le plafond absolu est d’une mensualité de l’offre souscrite.** Aucun cumul sur une période de 12 mois glissants : un client ayant déjà bénéficié d’un geste dans les 12 derniers mois n’est pas éligible.
 
 ## Exclusions
