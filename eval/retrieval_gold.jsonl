@@ -8,20 +8,20 @@
 {"id": "r08", "q": "Si j'ai la fibre et que je prends un mobile, j'ai une réduction ?", "expected": ["grille-tarifaire-2026#reduction-multi-offre"]}
 {"id": "r09", "q": "Vous avez des offres pour mon entreprise ?", "expected": ["grille-tarifaire-2026#offres-professionnelles"]}
 {"id": "r10", "q": "Pourquoi ma première facture est plus élevée que le prix de l'offre ?", "expected": ["faq-facturation#pourquoi-le-montant-differe-du-prix-de-l-offre"]}
-{"id": "r11", "q": "Mon voyant est rouge et il clignote, ça veut dire quoi ?", "intent": "box_diagnosis", "expected": ["faq-box-internet#signification-des-voyants", "faq-box-internet#procedure-de-redemarrage"]}
+{"id": "r11", "q": "Mon voyant est rouge et il clignote, ça veut dire quoi ?", "expected": ["faq-box-internet#signification-des-voyants", "faq-box-internet#procedure-de-redemarrage"]}
 {"id": "r12", "q": "Ma box ne s'allume plus, aucun voyant", "expected": ["faq-box-internet#signification-des-voyants"]}
-{"id": "r13", "q": "Est-ce que l'intervention du technicien est payante ?", "intent": "technician_appointment", "expected": ["faq-box-internet#quand-programmer-l-intervention-d-un-technicien"]}
+{"id": "r13", "q": "Est-ce que l'intervention du technicien est payante ?", "expected": ["faq-box-internet#quand-programmer-l-intervention-d-un-technicien"]}
 {"id": "r14", "q": "Combien je paie si je ne rends pas ma Box Néova 6 ?", "expected": ["cgv-resiliation#article-14-restitution-des-equipements"]}
-{"id": "r15", "q": "Je veux résilier, combien ça va me coûter au total ?", "intent": "termination_cost", "expected": ["cgv-resiliation#article-11-demande-de-resiliation", "cgv-resiliation#article-12-frais-de-resiliation-anticipee", "cgv-resiliation#article-14-restitution-des-equipements"]}
+{"id": "r15", "q": "Je veux résilier, combien ça va me coûter au total ?", "expected": ["cgv-resiliation#article-11-demande-de-resiliation", "cgv-resiliation#article-12-frais-de-resiliation-anticipee", "cgv-resiliation#article-14-restitution-des-equipements"]}
 {"id": "r16", "q": "Quel est le délai de préavis pour une résiliation ?", "expected": ["cgv-resiliation#article-11-demande-de-resiliation"]}
 {"id": "r17", "q": "J'ai perdu mon emploi, je peux résilier sans payer les frais ?", "expected": ["cgv-resiliation#article-13-cas-d-exoneration"]}
-{"id": "r18", "q": "Je déménage dans une ville où il n'y a pas la fibre Néova, je paie des frais de résiliation ?", "intent": "moving_uncovered_area", "expected": ["procedure-demenagement#zone-non-couverte", "cgv-resiliation#article-13-cas-d-exoneration"]}
-{"id": "r19", "q": "Combien de temps j'ai pour renvoyer mon matériel après la résiliation ?", "intent": "equipment_return", "expected": ["faq-retour-equipement#delai", "cgv-resiliation#article-14-restitution-des-equipements"]}
+{"id": "r18", "q": "Je déménage dans une ville où il n'y a pas la fibre Néova, je paie des frais de résiliation ?", "expected": ["procedure-demenagement#zone-non-couverte", "cgv-resiliation#article-13-cas-d-exoneration"]}
+{"id": "r19", "q": "Combien de temps j'ai pour renvoyer mon matériel après la résiliation ?", "expected": ["faq-retour-equipement#delai", "cgv-resiliation#article-14-restitution-des-equipements"]}
 {"id": "r20", "q": "Je dois renvoyer la carte SIM aussi ?", "expected": ["faq-retour-equipement#ce-qui-doit-etre-retourne"]}
 {"id": "r21", "q": "On m'a volé ma box, je dois quand même payer ?", "expected": ["faq-retour-equipement#materiel-perdu-ou-vole"]}
 {"id": "r22", "q": "Je pars au Maroc, combien coûtent les appels ?", "expected": ["fic-roam-2026-02#hors-union-europeenne"]}
 {"id": "r23", "q": "En Espagne, j'ai combien de data avec mon forfait 80 Go ?", "expected": ["fic-roam-2026-02#union-europeenne-dom-inclus"]}
-{"id": "r24", "q": "J'ai reçu une facture énorme après mes vacances aux États-Unis", "intent": "roaming_bill", "expected": ["fic-roam-2026-02#hors-union-europeenne", "fic-roam-2026-02#blocage-preventif"]}
+{"id": "r24", "q": "J'ai reçu une facture énorme après mes vacances aux États-Unis", "expected": ["fic-roam-2026-02#hors-union-europeenne", "fic-roam-2026-02#blocage-preventif"]}
 {"id": "r25", "q": "Est-ce que je peux payer ma dette en plusieurs fois ?", "expected": ["faq-facturation#echelonnement"]}
 {"id": "r26", "q": "Qu'est-ce qui se passe si je ne paie pas ma facture ?", "expected": ["faq-facturation#defaut-de-paiement"]}
 {"id": "r27", "q": "À quelle date ma facture est-elle prélevée ?", "expected": ["faq-facturation#rythme-de-facturation"]}

@@ -9,7 +9,6 @@ import json
 import statistics
 
 from neova import llm
-from neova.agent import workflow
 from neova.config import PROJECT_ROOT
 from neova.rag.answer import answer
 from neova.rag.index import QUERY_INSTRUCTION, _normalise, load_index, retrieve, searchable
@@ -30,8 +29,7 @@ def best_similarity(index, g: dict) -> float:
 def evaluate(index, gold: list[dict], use_llm: bool) -> list[dict]:
     rows = []
     for g in gold:
-        results = retrieve(index, [g["q"]], historical=g.get("historical", False), contract_start=g.get("contract_start"),
-                           required=workflow.required_chunk_ids(g.get("intent", "other")))
+        results = retrieve(index, [g["q"]], historical=g.get("historical", False), contract_start=g.get("contract_start"))
         context = [r.chunk.chunk_id for r in results]
         searched = [r.chunk.chunk_id for r in results if r.via == "search"]
         expected, in_corpus = g["expected"], g.get("in_corpus", True)

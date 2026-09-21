@@ -1,6 +1,6 @@
 """Hybrid search over the public chunks: BM25 (exact names, numbers) + embeddings (meaning),
 fused by reciprocal rank. Metadata decides what may be searched (archives) and what is added
-after the top-k (references, required evidence).
+after the top-k (references).
 
 Two variants are built so their benefit can be measured: A indexes the verbatim sections, B (the
 default) also indexes an LLM-written sentence version of each table (see table_text.py).
@@ -63,7 +63,7 @@ class Index:
 class Retrieved:
     chunk: Chunk
     score: float
-    via: str  # search | reference | required
+    via: str  # search | reference
 
 
 def _normalise(vectors) -> np.ndarray:
@@ -113,7 +113,7 @@ def _recency(chunk: Chunk) -> tuple:
 
 
 def retrieve(index: Index, queries: list[str], *, historical: bool = False, contract_start: str | None = None,
-             required: list[str] = (), k: int = 5) -> list[Retrieved]:
+             k: int = 5) -> list[Retrieved]:
     allowed = [i for i, c in enumerate(index.chunks) if searchable(c, historical, contract_start)]
     fused: dict[int, float] = {}
     query_vectors = _normalise(llm.embed_texts(queries, instruction=QUERY_INSTRUCTION))
@@ -138,8 +138,6 @@ def retrieve(index: Index, queries: list[str], *, historical: bool = False, cont
     for r in list(results):
         for chunk_id in r.chunk.references + r.chunk.referenced_by:
             add(chunk_id, "reference")
-    for chunk_id in required:
-        add(chunk_id, "required")
     return results
 
 

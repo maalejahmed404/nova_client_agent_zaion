@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-from neova.agent import workflow
 from neova.rag import index as rag_index
 from neova.rag.index import StaleIndex, build_index, load_index, retrieve, searchable, tokens
 from neova.rag.ingest import build_corpus
@@ -69,23 +68,9 @@ def test_contract_date_in_the_window_makes_the_archive_searchable(index):
 
 
 def test_article_12_first_still_brings_article_14(index):
-    results = retrieve(index, ["frais de résiliation anticipée mensualités restant dues"], k=1,
-                       required=workflow.required_chunk_ids("termination_cost"))
+    results = retrieve(index, ["frais de résiliation anticipée mensualités restant dues"], k=1)
     assert ids(results)[0] == ART12
     assert ART14 in ids(results)
-
-
-def test_required_evidence_survives_a_full_top_k(index):
-    required = workflow.required_chunk_ids("box_diagnosis")
-    results = retrieve(index, ["appel hors Union européenne tarif minute"], k=5, required=required)
-    assert len(ids(results, "search")) == 5
-    assert set(required) <= set(ids(results))
-
-
-def test_every_workflow_target_exists(corpus):
-    known = {c.chunk_id for c in corpus.chunks}
-    for intent in workflow.intents():
-        assert set(workflow.required_chunk_ids(intent)) <= known, intent
 
 
 def test_internal_chunks_are_never_searchable(corpus):
