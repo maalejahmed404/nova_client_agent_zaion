@@ -10,8 +10,9 @@ from urllib.parse import urlparse
 import httpx
 import typer
 import uvicorn
+from langchain_core.messages import AIMessage, ToolMessage
 
-from neova.agent.graph import build, run_turn
+from neova.agent.graph import build
 from neova.config import DATA_DIR, get_settings
 from neova.rag.ingest import fold
 
@@ -32,13 +33,27 @@ def api_is_up(url: str) -> bool:
         return False
 
 
+def show(node: str, update: dict | None) -> None:
+    update = update or {}
+    line = f"  [{node}]" + (f" → {update['next']}" if update.get("next") else "")
+    if update.get("reason"):
+        line += f" (motif : {update['reason']})"
+    typer.secho(line, fg="green")
+    for m in update.get("messages", []):
+        if isinstance(m, AIMessage):
+            for call in m.tool_calls:
+                typer.secho(f"      outil {call['name']}({json.dumps(call['args'], ensure_ascii=False)})", fg="blue")
+        elif isinstance(m, ToolMessage):
+            typer.secho(f"      résultat : {m.content[:200].replace(chr(10), ' ')}", fg="blue")
+
+
 @app.command()
 def api(port: int = 8000):
     uvicorn.run("neova.api.app:app", port=port)
 
 
 @app.command()
-def chat():
+def chat(logs: bool = typer.Option(True, help="Affiche les nœuds et les outils exécutés.")):
     url = get_settings().api_base_url.rstrip("/")
     if not api_is_up(url):
         server = uvicorn.Server(uvicorn.Config("neova.api.app:app", port=urlparse(url).port or 8000, log_level="warning"))
@@ -55,8 +70,12 @@ def chat():
         if name:
             message = logins[name[0]]
             typer.echo(f"(démo : identifiants envoyés {message})")
-        state = run_turn(graph, thread, message)
-        typer.echo(f"néova > {state['reply']}\n")
+        config = {"configurable": {"thread_id": thread}}
+        for step in graph.stream({"message": message, "next": ""}, config, stream_mode="updates"):
+            for node, update in step.items():
+                if logs:
+                    show(node, update)
+        typer.echo(f"néova > {graph.get_state(config).values['reply']}\n")
 
 
 if __name__ == "__main__":
