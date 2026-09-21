@@ -193,11 +193,19 @@ def test_book_slot_taken_between_proposal_and_confirmation():
 def test_book_already_has_appointment():
     headers = session()
     pid1 = propose(headers, slot_id="SLOT-7A33").json()["proposal_id"]
+    pid2 = propose(headers, slot_id="SLOT-7A34").json()["proposal_id"]   # two proposals opened before any booking
     assert book(headers, pid1, "key-6").status_code == 201
-    pid2 = propose(headers, slot_id="SLOT-7A34").json()["proposal_id"]
     response = book(headers, pid2, "key-7")
     assert response.status_code == 409
     assert response.json()["error"] == "already_has_appointment"
+
+
+def test_no_new_proposal_once_an_appointment_exists():
+    headers = session()
+    assert book(headers, propose(headers, slot_id="SLOT-7A33").json()["proposal_id"], "key-8").status_code == 201
+    response = propose(headers, slot_id="SLOT-7A34")
+    assert response.status_code == 409 and response.json()["error"] == "already_has_appointment"
+    assert response.json()["appointment"]["start"].startswith("2026-08-28T09:00")
 
 
 # --- idempotency ---
@@ -217,8 +225,8 @@ def test_book_retry_after_consumption_replays_same_result():
 def test_book_same_key_different_body_conflicts():
     headers = session()
     pid1 = propose(headers, slot_id="SLOT-7A33").json()["proposal_id"]
-    assert book(headers, pid1, "shared-key").status_code == 201
     pid2 = propose(headers, slot_id="SLOT-7A34").json()["proposal_id"]
+    assert book(headers, pid1, "shared-key").status_code == 201
     response = book(headers, pid2, "shared-key")
     assert response.status_code == 409
     assert response.json()["error"] == "idempotency_conflict"
@@ -231,9 +239,11 @@ def test_delete_appointment_frees_slot():
     pid = propose(headers, slot_id="SLOT-7A34").json()["proposal_id"]
     appt_id = book(headers, pid, "delete-key").json()["appointment_id"]
     assert not any(s["slot_id"] == "SLOT-7A34" for s in client.get("/slots", headers=headers).json())
-    assert client.delete(f"/appointments/{appt_id}").json()["ok"] is True
+    assert client.delete(f"/appointments/{appt_id}").status_code == 401                          # no session
+    assert client.delete(f"/appointments/{appt_id}", headers=session(AHMED)).status_code == 404  # another customer's
+    assert client.delete(f"/appointments/{appt_id}", headers=headers).json()["ok"] is True
     assert any(s["slot_id"] == "SLOT-7A34" for s in client.get("/slots", headers=headers).json())
-    assert client.delete("/appointments/UNKNOWN").status_code == 404
+    assert client.delete("/appointments/UNKNOWN", headers=headers).status_code == 404
 
 
 # --- tickets ---

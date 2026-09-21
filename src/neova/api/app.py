@@ -164,6 +164,10 @@ def create_proposal(req: ProposalRequest, x_session: Optional[str] = Header(None
             return JSONResponse(status_code=409, content={"error": "active_outage", "detail": "Une panne active est en cours dans votre zone."})
         if not slot.available:
             return JSONResponse(status_code=409, content={"error": "slot_taken", "detail": "Le créneau n'est plus disponible."})
+        existing = next((a for a in store.data.get("appointments", []) if a["customer_id"] == customer.customer_id), None)
+        if existing:
+            return JSONResponse(status_code=409, content={"error": "already_has_appointment", "detail": "Le client a déjà un rendez-vous.",
+                                                          "appointment": {"start": existing["start"], "end": existing["end"]}})
 
         pid = proposal_id(customer.customer_id, slot.slot_id, req.reason, req.override_reason, cost_notice_text)
         store.proposals[pid] = {
@@ -245,15 +249,18 @@ def create_appointment(
     return JSONResponse(status_code=201, content=response_body)
 
 @app.delete("/appointments/{appointment_id}")
-def delete_appointment(appointment_id: str):
+def delete_appointment(appointment_id: str, x_session: Optional[str] = Header(None, alias="X-Session")):
+    customer = store.customer_for(x_session)
+    error = session_error(customer)
+    if error:
+        return error
     with store.lock:
-        # Find appointment
         appt_to_remove = None
         for i, appt_data in enumerate(store.data.get("appointments", [])):
-            if appt_data["appointment_id"] == appointment_id:
+            if appt_data["appointment_id"] == appointment_id and appt_data["customer_id"] == customer.customer_id:
                 appt_to_remove = appt_data
                 break
-        
+
         if not appt_to_remove:
             return JSONResponse(status_code=404, content={"error": "Appointment not found"})
         

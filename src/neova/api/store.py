@@ -142,27 +142,5 @@ class Store:
                     return Appointment(**appt_data)
             return None
 
-    def create_ticket(
-        self,
-        ticket_id: str,
-        customer_id: Optional[str],
-        category: str,
-        summary: str,
-        actions_taken: List[str],
-        urgency: str,
-        callback_eta: str
-    ):
-        with self.lock:
-            new_ticket = {
-                "ticket_id": ticket_id,
-                "customer_id": customer_id,
-                "category": category,
-                "summary": summary,
-                "actions_taken": actions_taken,
-                "urgency": urgency,
-                "created_at": now().isoformat(),
-                "callback_eta": callback_eta,
-            }
-            self.data["tickets"].append(new_ticket)
 
 store = Store()
