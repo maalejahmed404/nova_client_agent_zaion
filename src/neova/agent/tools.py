@@ -1,5 +1,5 @@
 """The agent's only access to customer data: the Néova API, one method per endpoint. Transient
-failures (5xx, network) are retried; every write carries one idempotency key for all its retries."""
+failures (5xx, network) are retried; every write carries an idempotency key, which the caller can keep to replay the operation."""
 import uuid
 
 import httpx
@@ -22,10 +22,10 @@ class APIError(Exception):
 
 
 class NeovaAPI:
-    def __init__(self, http: httpx.Client | None = None):
+    def __init__(self, http: httpx.Client | None = None, session: str | None = None, customer_id: str | None = None):
         self.http = http or httpx.Client(base_url=get_settings().api_base_url, timeout=10)
-        self.session = None
-        self.customer_id = None
+        self.session = session
+        self.customer_id = customer_id
 
     @tenacity.retry(
         retry=tenacity.retry_if_exception_type((httpx.TransportError, APIUnavailable)),
@@ -40,10 +40,10 @@ class NeovaAPI:
         return response
 
     def _call(self, method: str, path: str, json: dict | None = None, params: dict | None = None,
-              write: bool = False):
+              idempotency_key: str | None = None):
         headers = {"X-Session": self.session} if self.session else {}
-        if write:
-            headers["Idempotency-Key"] = str(uuid.uuid4())
+        if idempotency_key:
+            headers["Idempotency-Key"] = idempotency_key
         response = self._send(method, path, json=json, params=params, headers=headers)
         body = response.json()
         if response.status_code >= 400:
@@ -71,12 +71,15 @@ class NeovaAPI:
         return self._call("POST", "/appointments/proposals",
                           json={"slot_id": slot_id, "reason": reason, "override_reason": override_reason})
 
-    def book_appointment(self, proposal_id: str) -> dict:
-        return self._call("POST", "/appointments", json={"proposal_id": proposal_id}, write=True)
+    def book_appointment(self, proposal_id: str, idempotency_key: str | None = None) -> dict:
+        """Pass the same key again to replay an operation whose result is unknown."""
+        return self._call("POST", "/appointments", json={"proposal_id": proposal_id},
+                          idempotency_key=idempotency_key or str(uuid.uuid4()))
 
     def cancel_appointment(self, appointment_id: str) -> dict:
         return self._call("DELETE", f"/appointments/{appointment_id}")
 
-    def create_ticket(self, category: str, summary: str, actions_taken: list[str], urgency: str) -> dict:
-        return self._call("POST", "/tickets", write=True, json={
+    def create_ticket(self, category: str, summary: str, actions_taken: list[str], urgency: str,
+                      idempotency_key: str | None = None) -> dict:
+        return self._call("POST", "/tickets", idempotency_key=idempotency_key or str(uuid.uuid4()), json={
             "category": category, "summary": summary, "actions_taken": actions_taken, "urgency": urgency})

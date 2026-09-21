@@ -74,9 +74,17 @@ def templates() -> dict[str, str]:
             _rules(notice, section(ESCALATION_PDF, "Transfert après examen", numbered=True),
                    section(ESCALATION_PDF, "Principe général")),
             GUARD,
-            "Réponse imposée : matched_items contient les numéros de toutes les situations qui s'appliquent "
-            "(liste vide si aucune). can_conclude vaut vrai uniquement si les faits et les documents retrouvés "
-            "établissent la réponse sans approximation. reason explique la décision en une phrase pour un conseiller.",
+            "Réponse imposée : candidates contient chaque situation qui pourrait s'appliquer (liste vide si "
+            "aucune), avec la liste de tous ses éléments tels qu'ils sont écrits dans la règle, et pour chacun "
+            "established = vrai seulement si le message ou les faits l'établissent explicitement. Une demande de "
+            "rendez-vous avec un technicien est traitée par l'outil de réservation : sa réponse n'a pas à figurer "
+            "dans les documents. documents_cover vaut vrai si les documents retrouvés contiennent les règles "
+            "nécessaires pour traiter la demande ; un calcul simple à partir des faits et des documents est permis. "
+            "advisor_conditions : si les documents disent que la demande doit être validée ou traitée par un "
+            "conseiller, la liste de toutes les conditions que les documents posent pour cette demande (par exemple "
+            "un montant minimum ou un délai), chacune avec met = yes, no ou unknown selon les faits du client ; "
+            "liste vide si les documents ne demandent pas de conseiller. reason explique la décision en une phrase "
+            "pour un conseiller.",
         ]),
         "gesture": "\n\n".join([
             "Tu es le spécialiste des gestes commerciaux du service client résidentiel de Néova Télécom. Tu rends "
@@ -95,17 +103,20 @@ def templates() -> dict[str, str]:
             "needs_review dans tous les autres cas.\n"
             "- cap_row : numéro de la ligne des Plafonds qui correspond à la durée observée de l'incident, null si aucune.\n"
             "- escalate_n2 : vrai si les règles internes l'exigent pour ce cas.\n"
+            "- out_of_scope : vrai si la demande relève de « Ce qui n'entre pas dans ce cadre ».\n"
             "- customer_outcome et redirect_to : l'issue et les orientations prévues par la Formulation. Ce sont les "
             "seules informations transmises au client.\n"
             "- internal_note : explication de la décision pour le conseiller.",
         ]),
         "ticket": "\n\n".join([
-            "Tu prépares le ticket de transfert destiné à un conseiller humain de Néova Télécom.",
+            "Tu prépares le ticket de transfert destiné à un conseiller humain de Néova Télécom. Écris comme un "
+            "conseiller expérimenté qui transmet un dossier à un collègue : précis, factuel, neutre, sans formule inutile.",
             _rules(notice, section(ESCALATION_PDF, "Informations à transmettre")),
             GUARD,
-            "Réponse imposée : category parmi les valeurs du schéma ; motif = le motif du transfert ; summary = "
-            "résumé factuel de la demande ; actions_taken = les actions déjà effectuées, reprises de <actions> ; "
-            "urgency parmi low, normal, high. N'inclus aucun identifiant client : le système l'ajoute s'il est vérifié.",
+            "Réponse imposée : category parmi les valeurs du schéma ; motif = le motif du transfert, en une ligne ; "
+            "summary = résumé factuel de la demande en deux à quatre phrases, qui rapporte ce que le client a dit sans "
+            "l'interpréter ; actions_taken = les actions déjà effectuées, reprises de <actions> ; urgency parmi low, "
+            "normal, high. N'inclus aucun identifiant client : le système l'ajoute s'il est vérifié.",
         ]),
         "handoff_message": "\n\n".join([
             "Tu rédiges le message qui annonce au client le transfert de sa demande vers un conseiller humain.",

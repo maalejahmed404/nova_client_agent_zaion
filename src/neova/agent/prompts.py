@@ -26,10 +26,37 @@ class PrecheckVerdict(BaseModel):
     evidence: str
 
 
+class Element(BaseModel):
+    element: str
+    established: bool
+
+
+class Candidate(BaseModel):
+    item: int
+    elements: list[Element]
+
+
+class Condition(BaseModel):
+    condition: str
+    met: Literal["yes", "no", "unknown"]
+
+
 class PostReviewVerdict(BaseModel):
-    matched_items: list[int]
-    can_conclude: bool
+    candidates: list[Candidate]
+    documents_cover: bool
+    advisor_conditions: list[Condition]
     reason: str
+
+    @property
+    def matched_items(self) -> list[int]:
+        """A situation counts only if every one of its elements is established."""
+        return sorted(c.item for c in self.candidates if c.elements and all(e.established for e in c.elements))
+
+    @property
+    def can_conclude(self) -> bool:
+        """An advisor is needed only when no documented condition for it is known to fail."""
+        advisor_needed = bool(self.advisor_conditions) and all(c.met != "no" for c in self.advisor_conditions)
+        return self.documents_cover and not advisor_needed
 
 
 class GestureVerdict(BaseModel):
@@ -37,6 +64,7 @@ class GestureVerdict(BaseModel):
     condition_status: list[Literal["met", "not_met", "unknown"]]
     cap_row: int | None
     escalate_n2: bool
+    out_of_scope: bool
     internal_note: str
     customer_outcome: Literal["credit_next_invoice", "refused", "under_review"]
     redirect_to: list[Literal["payment_plan", "incident_follow_up", "technician_appointment"]]
@@ -68,7 +96,7 @@ def data(tag: str, value) -> str:
     return f"<{tag}>\n{text.replace('<', '‹').replace('>', '›')}\n</{tag}>"
 
 
-def _ask(name: str, schema, *blocks: str):
+def ask(name: str, schema, *blocks: str):
     try:
         return llm.structured_call([("system", template(name)), ("human", "\n\n".join(blocks))], schema)
     except Exception as exc:
@@ -77,7 +105,7 @@ def _ask(name: str, schema, *blocks: str):
 
 
 def precheck(message: str, context: str = "") -> PrecheckVerdict | None:
-    v = _ask("precheck", PrecheckVerdict, data("contexte", context or "(aucun)"), data("message_client", message))
+    v = ask("precheck", PrecheckVerdict, data("contexte", context or "(aucun)"), data("message_client", message))
     if v is None or any(not 1 <= i <= item_count("precheck") for i in v.matched_items):
         return None
     if v.evidence and fold(v.evidence) not in fold(f"{context} {message}"):
@@ -86,19 +114,33 @@ def precheck(message: str, context: str = "") -> PrecheckVerdict | None:
 
 
 def post_review(message: str, facts: dict, documents: str) -> PostReviewVerdict | None:
-    v = _ask("post_review", PostReviewVerdict, data("message_client", message), data("faits", facts),
+    v = ask("post_review", PostReviewVerdict, data("message_client", message), data("faits", facts),
              data("documents", documents or "(aucun)"))
-    if v is None or any(not 1 <= i <= item_count("post_review") for i in v.matched_items):
+    if v is None or any(not 1 <= c.item <= item_count("post_review") for c in v.candidates):
         return None
     return v
 
 
 def gesture(message: str, facts: dict) -> GestureVerdict | None:
-    return _ask("gesture", GestureVerdict, data("faits", facts), data("message_client", message))
+    """The LLM applies the policy to the facts; the code then overrides it wherever the data
+    decides. needs_review always means a handoff. No credit is ever announced as applied: no tool
+    applies one, so a gesture the customer may get goes to an advisor."""
+    v = ask("gesture", GestureVerdict, data("faits", facts), data("message_client", message))
+    if v is None:
+        return None
+    balance = (facts.get("client") or {}).get("balance_due")
+    if v.out_of_scope or v.escalate_n2 or balance is None:
+        decision = "needs_review"
+    elif balance > 0 or "not_met" in v.condition_status:
+        decision = "not_eligible"
+    else:
+        decision = "needs_review"  # the gesture history is unavailable, so eligibility can never be confirmed
+    return v.model_copy(update={"decision": decision,
+                                "customer_outcome": "refused" if decision == "not_eligible" else "under_review"})
 
 
 def draft_ticket(conversation: str, actions: list[str]) -> dict:
-    v = _ask("ticket", HandoffTicket, data("contexte", conversation), data("actions", actions))
+    v = ask("ticket", HandoffTicket, data("contexte", conversation), data("actions", actions))
     if v is None:
         return {"category": "other", "summary": conversation[-1000:], "actions_taken": actions, "urgency": "normal"}
     return {"category": v.category, "summary": f"{v.motif} — {v.summary}", "actions_taken": v.actions_taken,

@@ -34,5 +34,6 @@ Réponse imposée :
 - decision : eligible si toutes les conditions sont met ; not_eligible si une condition est not_met ; needs_review dans tous les autres cas.
 - cap_row : numéro de la ligne des Plafonds qui correspond à la durée observée de l'incident, null si aucune.
 - escalate_n2 : vrai si les règles internes l'exigent pour ce cas.
+- out_of_scope : vrai si la demande relève de « Ce qui n'entre pas dans ce cadre ».
 - customer_outcome et redirect_to : l'issue et les orientations prévues par la Formulation. Ce sont les seules informations transmises au client.
 - internal_note : explication de la décision pour le conseiller.

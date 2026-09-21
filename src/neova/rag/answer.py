@@ -1,11 +1,12 @@
-"""Minimal answer step: answers only from the retrieved context, or says the corpus does not
-contain the answer. Used by the retrieval evaluation now, by the graph later."""
+"""Answer step: answers only from the retrieved context (plus the customer's API facts and, on the
+gesture route, the decision already taken), or says the corpus does not contain the answer."""
 import logging
 from pathlib import Path
 
 from pydantic import BaseModel
 
 from neova import llm
+from neova.agent.prompts import data
 from neova.rag.index import Retrieved
 
 log = logging.getLogger(__name__)
@@ -27,9 +28,14 @@ def context_block(results: list[Retrieved]) -> str:
     return f"<contexte>\n{extracts}\n</contexte>"
 
 
-def answer(question: str, results: list[Retrieved]) -> Answer:
-    messages = [("system", TEMPLATE_PATH.read_text(encoding="utf-8")),
-                ("human", f"{context_block(results)}\n\n<question>\n{_escape(question)}\n</question>")]
+def answer(question: str, results: list[Retrieved], facts: dict | None = None, decision: str | None = None) -> Answer:
+    blocks = [context_block(results)]
+    if facts:
+        blocks.append(data("faits_client", facts))
+    if decision:
+        blocks.append(data("decision", decision))
+    blocks.append(f"<question>\n{_escape(question)}\n</question>")
+    messages = [("system", TEMPLATE_PATH.read_text(encoding="utf-8")), ("human", "\n\n".join(blocks))]
     try:
         reply = llm.structured_call(messages, Answer)
     except Exception as exc:
@@ -37,4 +43,5 @@ def answer(question: str, results: list[Retrieved]) -> Answer:
         return Answer(in_corpus=False, answer="", sources=[])
     known = {r.chunk.chunk_id for r in results}
     sources = [s for s in reply.sources if s in known]
-    return reply.model_copy(update={"in_corpus": reply.in_corpus and bool(sources), "sources": sources})
+    grounded = bool(sources) or decision is not None
+    return reply.model_copy(update={"in_corpus": reply.in_corpus and grounded, "sources": sources})

@@ -88,3 +88,23 @@ def test_handoff_message_announces_the_api_delay(monkeypatch):
 
 def test_handoff_message_never_claims_a_ticket_that_does_not_exist():
     assert prompts.handoff_message("aide", None) == prompts.NO_TICKET_MESSAGE
+
+
+def test_a_situation_counts_only_if_every_element_is_established():
+    verdict = prompts.PostReviewVerdict(documents_cover=True, advisor_conditions=[], reason="", candidates=[
+        {"item": 6, "elements": [{"element": "panne persistante", "established": True},
+                                 {"element": "intervention technicien déjà réalisée", "established": False}]},
+        {"item": 3, "elements": [{"element": "demande d'échéancier de paiement", "established": True}]},
+        {"item": 7, "elements": []},
+    ])
+    assert verdict.matched_items == [3]
+
+
+def test_an_advisor_is_needed_only_if_no_documented_condition_fails():
+    def verdict(*met):
+        return prompts.PostReviewVerdict(candidates=[], documents_cover=True, reason="",
+                                         advisor_conditions=[{"condition": f"c{i}", "met": m} for i, m in enumerate(met)])
+    assert verdict().can_conclude                       # no advisor asked by the documents
+    assert verdict("no", "yes").can_conclude            # the customer does not qualify: documented answer
+    assert not verdict("yes", "unknown").can_conclude   # qualifies or unknown: advisor
+    assert not prompts.PostReviewVerdict(candidates=[], documents_cover=False, advisor_conditions=[], reason="").can_conclude
