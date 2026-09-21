@@ -55,6 +55,7 @@ precheck ──match──▶ handoff ──▶ END
    │
    ▼
  agent ⇄ tools ──request_handoff──▶ handoff
+   │        └────booking confirmed──▶ END
    │
    ▼
 post_review ──human──▶ handoff        otherwise ──▶ END
@@ -72,13 +73,17 @@ proposal, ticket) between messages. Conversations do not survive a restart.
   `assess_gesture`, `request_handoff`. Reads are free; the writes are gated by code:
   `propose_appointment` picks the slot itself, `book_appointment` runs only if a proposal is
   pending and a structured check reads the customer's message as a clear yes, a 500 during the
-  write is replayed with the same idempotency key on the next message, and the confirmation
-  sentence is written from the API result.
-- **post_review**: an LLM checks every reply against the "transfert après examen" section before
-  the customer reads it. It may ask once for a missing document or customer fact, which code
+  write is replayed with the same idempotency key on the next message, and once the booking API
+  succeeds the customer gets a confirmation that restates the slot and fees of the accepted
+  proposal.
+- **post_review**: an LLM checks the replies the agent writes against the "transfert après
+  examen" section before the customer reads them; booking confirmations and transfer messages
+  come from their own paths. It may ask once for a missing document or customer fact, which code
   fetches; it transfers only if the documents cannot settle the case.
 - **handoff**: the ticket is drafted, created with an idempotency key, then the delay the API
-  returned is announced. One ticket per conversation; a failed creation is never announced.
+  returned is announced. Each transfer creates one ticket; retrying a transfer whose result is
+  uncertain reuses the same idempotency key, so it never creates a duplicate. A failed creation
+  is never announced.
 
 The decision to hand over is made by an LLM: `precheck` before the work, the agent during it,
 `post_review` after it. Tools return facts ("the contract is professional", "verification
@@ -126,9 +131,10 @@ planner node deciding route, identification and clarification before any lookup.
 about writes and wrong about reads: manual testing produced requests the planner could not
 classify without information it did not have yet (a greeting, "quels sont les autres créneaux",
 identifiers typed unasked), and each fix added a node. The rewrite keeps the guarantees in code
-around the writes (explicit yes, stored proposal, idempotency key, replay, one ticket) and lets
-the agent call the read tools freely. *Traded away:* determinism of the path. A wrong turn ends
-in a handoff, never in an invented answer or an unconfirmed action.
+around the writes (explicit yes, stored proposal, idempotency key, replay) and lets the agent
+call the read tools freely. *Traded away:* determinism of the path. The checks aim to limit
+unsupported answers and unconfirmed actions; how reliable they are end to end is still to be
+measured.
 
 **2. Internal documents are prompt context for decision nodes, never retrieval material.**
 The two internal PDFs (escalation procedure, commercial-gesture policy) are excluded from the
