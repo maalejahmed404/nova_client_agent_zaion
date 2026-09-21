@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import List, Optional, Literal
 from pydantic import BaseModel, Field, computed_field, field_validator
 from neova.config import now
@@ -23,6 +23,13 @@ class Customer(BaseModel):
     equipment: List[str]
     last_invoices: List[Invoice]
 
+    @computed_field
+    @property
+    def seniority_months(self) -> int:
+        start, current = date.fromisoformat(self.contract_start_date), now()
+        months = (current.year - start.year) * 12 + (current.month - start.month)
+        return months - 1 if current.day < start.day else months
+
 class Incident(BaseModel):
     incident_id: str
     postal_codes: List[str]
@@ -41,6 +48,15 @@ class Incident(BaseModel):
         if self.started_at <= current_time and (self.estimated_resolution is None or self.estimated_resolution > current_time):
             return "active"
         return "past_eta"
+
+    @computed_field
+    @property
+    def observed_duration_hours(self) -> Optional[float]:
+        """Hours since the start, None before it starts. No actual end is recorded in the data."""
+        current_time = now()
+        if self.started_at > current_time:
+            return None
+        return round((current_time - self.started_at).total_seconds() / 3600, 2)
 
 class Slot(BaseModel):
     slot_id: str
@@ -71,6 +87,7 @@ class Ticket(BaseModel):
     urgency: Literal["low", "normal", "high"]
     created_at: datetime
     callback_eta: str
+    callback_by: Optional[datetime] = None
 
 class VerifyRequest(BaseModel):
     customer_id: str
