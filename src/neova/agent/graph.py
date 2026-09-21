@@ -282,19 +282,16 @@ def run_verify(state, customer_id: str, phone: str):
             {"identity_failures": failures}, None
     except APIUnavailable:
         return "Service indisponible : l'identité ne peut pas être vérifiée pour le moment.", {}, None
-    view = {k: customer.get(k) for k in CUSTOMER_FIELDS}
     changes = {"session": client.session, "customer_id": customer["customer_id"], "identity_failures": 0,
-               "facts": {**state.get("facts", {}), "client": view},
                "actions": state.get("actions", []) + ["identité vérifiée"]}
     if state.get("customer_id") not in (None, customer["customer_id"]):
-        changes.update(facts={"client": view}, actions=["identité vérifiée"], gesture=None, proposal=None, proposed=[],
+        changes.update(facts={}, actions=["identité vérifiée"], gesture=None, proposal=None, proposed=[],
                        ticket=None, uncertain=None, passages=[],
                        messages=[RemoveMessage(id=REMOVE_ALL_MESSAGES), HumanMessage(state["message"]), state["messages"][-1]])
     if customer["plan"].startswith("Néova Pro"):
         return (f"Identité vérifiée : le contrat de ce client est professionnel ({customer['plan']}).",
                 changes, None)
-    return (f"Identité vérifiée. Dossier : {json.dumps(view, ensure_ascii=False)}\n"
-            "Reprenez maintenant la demande initiale du client avec les outils nécessaires, dans ce même tour."), changes, None
+    return "Identité vérifiée.", changes, None
 
 
 def run_get_customer(state):

@@ -102,7 +102,10 @@ def templates() -> dict[str, str]:
             "<reponse_proposee> (tarif, délai, droit, existence ou absence d'une offre ou d'un service) est établie "
             "par les documents ou les faits ; faux si elle affirme ce que les pièces ne disent pas, y compris qu'une "
             "chose n'existe pas parce que les documents n'en parlent pas. Une salutation, une question au client ou "
-            "une annonce de transfert n'a besoin d'aucune pièce. reason explique la décision en une phrase "
+            "une annonce de transfert n'a besoin d'aucune pièce. Si <reponse_proposee> dit que l'information n'est "
+            "pas trouvée, pas disponible ou ne peut pas être confirmée, la réponse à la demande n'est pas établie par "
+            "la documentation : la situation qui le prévoit est établie et documents_cover vaut faux. "
+            "reason explique la décision en une phrase "
             "pour un conseiller.",
         ]),
         "gesture": "\n\n".join([

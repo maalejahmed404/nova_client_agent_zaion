@@ -310,7 +310,7 @@ def test_a_new_customer_starts_from_a_clean_conversation(script, talk):
     state = talk("NEO-10467 0778115402")
     text = " ".join(str(m.content) for m in state["messages"])
     assert CAMILLE[0] not in text and "Bonjour Camille." not in text and AHMED[0] in text
-    assert state["facts"] == {"client": state["facts"]["client"]} and state["facts"]["client"]["customer_id"] == AHMED[0]
+    assert state["facts"] == {} and state["customer_id"] == AHMED[0]
     assert state["actions"] == ["identité vérifiée"]
     assert [m.type for m in state["messages"]] == ["human", "ai", "tool", "ai"]
 
