@@ -1,0 +1,45 @@
+{"id": "r01", "q": "Combien coûte la fibre 1 Gb/s par mois ?", "expected": ["grille-tarifaire-2026#offres-fibre-residentielles"]}
+{"id": "r02", "q": "C'est quoi votre abonnement box internet le moins cher ?", "expected": ["grille-tarifaire-2026#offres-fibre-residentielles"]}
+{"id": "r03", "q": "Quel est le prix actuel de la fibre 500 ?", "expected": ["grille-tarifaire-2026#offres-fibre-residentielles"], "note": "archive trap: the promo has another price"}
+{"id": "r04", "q": "Je cherche un forfait mobile avec beaucoup de data, qu'est-ce que vous proposez ?", "expected": ["grille-tarifaire-2026#offres-mobiles"]}
+{"id": "r05", "q": "Le forfait 80 Go coûte combien ?", "expected": ["grille-tarifaire-2026#offres-mobiles"], "note": "archive trap: the promo lists the 80 Go at 9,99"}
+{"id": "r06", "q": "Le décodeur TV, c'est combien par mois en option ?", "expected": ["grille-tarifaire-2026#options"]}
+{"id": "r07", "q": "J'ai perdu ma carte SIM, ça coûte combien de la remplacer ?", "expected": ["grille-tarifaire-2026#frais-ponctuels"]}
+{"id": "r08", "q": "Si j'ai la fibre et que je prends un mobile, j'ai une réduction ?", "expected": ["grille-tarifaire-2026#reduction-multi-offre"]}
+{"id": "r09", "q": "Vous avez des offres pour mon entreprise ?", "expected": ["grille-tarifaire-2026#offres-professionnelles"]}
+{"id": "r10", "q": "Pourquoi ma première facture est plus élevée que le prix de l'offre ?", "expected": ["faq-facturation#pourquoi-le-montant-differe-du-prix-de-l-offre"]}
+{"id": "r11", "q": "Mon voyant est rouge et il clignote, ça veut dire quoi ?", "intent": "box_diagnosis", "expected": ["faq-box-internet#signification-des-voyants", "faq-box-internet#procedure-de-redemarrage"]}
+{"id": "r12", "q": "Ma box ne s'allume plus, aucun voyant", "expected": ["faq-box-internet#signification-des-voyants"]}
+{"id": "r13", "q": "Est-ce que l'intervention du technicien est payante ?", "intent": "technician_appointment", "expected": ["faq-box-internet#quand-programmer-l-intervention-d-un-technicien"]}
+{"id": "r14", "q": "Combien je paie si je ne rends pas ma Box Néova 6 ?", "expected": ["cgv-resiliation#article-14-restitution-des-equipements"]}
+{"id": "r15", "q": "Je veux résilier, combien ça va me coûter au total ?", "intent": "termination_cost", "expected": ["cgv-resiliation#article-11-demande-de-resiliation", "cgv-resiliation#article-12-frais-de-resiliation-anticipee", "cgv-resiliation#article-14-restitution-des-equipements"]}
+{"id": "r16", "q": "Quel est le délai de préavis pour une résiliation ?", "expected": ["cgv-resiliation#article-11-demande-de-resiliation"]}
+{"id": "r17", "q": "J'ai perdu mon emploi, je peux résilier sans payer les frais ?", "expected": ["cgv-resiliation#article-13-cas-d-exoneration"]}
+{"id": "r18", "q": "Je déménage dans une ville où il n'y a pas la fibre Néova, je paie des frais de résiliation ?", "intent": "moving_uncovered_area", "expected": ["procedure-demenagement#zone-non-couverte", "cgv-resiliation#article-13-cas-d-exoneration"]}
+{"id": "r19", "q": "Combien de temps j'ai pour renvoyer mon matériel après la résiliation ?", "intent": "equipment_return", "expected": ["faq-retour-equipement#delai", "cgv-resiliation#article-14-restitution-des-equipements"]}
+{"id": "r20", "q": "Je dois renvoyer la carte SIM aussi ?", "expected": ["faq-retour-equipement#ce-qui-doit-etre-retourne"]}
+{"id": "r21", "q": "On m'a volé ma box, je dois quand même payer ?", "expected": ["faq-retour-equipement#materiel-perdu-ou-vole"]}
+{"id": "r22", "q": "Je pars au Maroc, combien coûtent les appels ?", "expected": ["fic-roam-2026-02#hors-union-europeenne"]}
+{"id": "r23", "q": "En Espagne, j'ai combien de data avec mon forfait 80 Go ?", "expected": ["fic-roam-2026-02#union-europeenne-dom-inclus"]}
+{"id": "r24", "q": "J'ai reçu une facture énorme après mes vacances aux États-Unis", "intent": "roaming_bill", "expected": ["fic-roam-2026-02#hors-union-europeenne", "fic-roam-2026-02#blocage-preventif"]}
+{"id": "r25", "q": "Est-ce que je peux payer ma dette en plusieurs fois ?", "expected": ["faq-facturation#echelonnement"]}
+{"id": "r26", "q": "Qu'est-ce qui se passe si je ne paie pas ma facture ?", "expected": ["faq-facturation#defaut-de-paiement"]}
+{"id": "r27", "q": "À quelle date ma facture est-elle prélevée ?", "expected": ["faq-facturation#rythme-de-facturation"]}
+{"id": "r28", "q": "Comment je change mes coordonnées bancaires ?", "expected": ["faq-espace-client#modification-de-l-iban"]}
+{"id": "r29", "q": "J'ai oublié le mot de passe de mon espace client", "expected": ["faq-espace-client#mot-de-passe-oublie"]}
+{"id": "r30", "q": "Combien coûte un déménagement si le nouveau logement est déjà raccordé ?", "expected": ["procedure-demenagement#frais"]}
+{"id": "r31", "q": "Combien de temps à l'avance dois-je prévenir pour mon déménagement ?", "expected": ["procedure-demenagement#delai"]}
+{"id": "r32", "q": "Quel était le prix de la fibre 500 pendant l'offre Rentrée 2024 ?", "historical": true, "expected": ["promo-rentree-2024#tarifs-promotionnels"]}
+{"id": "r33", "q": "Mon prix va augmenter après la première année ?", "contract_start": "2024-10-15", "expected": ["promo-rentree-2024#tarifs-promotionnels", "promo-rentree-2024#conditions"]}
+{"id": "t01", "q": "Je n'ai pas rendu la télécommande, combien vais-je payer ?", "expected": ["cgv-resiliation#article-14-restitution-des-equipements"]}
+{"id": "t02", "q": "Le voyant de ma box est orange, c'est grave ?", "expected": ["faq-box-internet#signification-des-voyants"]}
+{"id": "t03", "q": "Combien coûte un SMS envoyé depuis les États-Unis ?", "expected": ["fic-roam-2026-02#hors-union-europeenne"]}
+{"id": "t04", "q": "Avec le forfait 200 Go, combien de data je peux utiliser en Italie ?", "expected": ["fic-roam-2026-02#union-europeenne-dom-inclus"]}
+{"id": "n01", "q": "Est-ce que Netflix est inclus dans l'abonnement fibre ?", "expected": [], "in_corpus": false}
+{"id": "n02", "q": "Vous proposez une box 5G ?", "expected": [], "in_corpus": false}
+{"id": "n03", "q": "Comment obtenir mon code RIO pour garder mon numéro chez un autre opérateur ?", "expected": [], "in_corpus": false}
+{"id": "n04", "q": "Combien de jours pour recevoir ma box après la souscription ?", "expected": [], "in_corpus": false}
+{"id": "n05", "q": "Combien coûte l'option appels illimités vers l'international ?", "expected": [], "in_corpus": false}
+{"id": "n06", "q": "Quelles chaînes TV sont incluses avec le décodeur ?", "expected": [], "in_corpus": false}
+{"id": "n07", "q": "Combien coûte une Box Néova 6 si je veux l'acheter ?", "expected": [], "in_corpus": false}
+{"id": "n08", "q": "Quels sont les horaires d'ouverture du service client ?", "expected": [], "in_corpus": false}
