@@ -90,8 +90,9 @@ proposal, ticket) between messages. Conversations do not survive a restart.
   is never announced.
 
 The decision to hand over is made by an LLM: `precheck` before the work, the agent during it,
-`post_review` after it. Tools return facts ("the contract is professional", "verification
-refused a second time") and the agent decides. Code hands over in three cases where no LLM
+`post_review` after it. Tools never route to a human themselves: they report the outcome
+("the contract is professional", "verification refused a second time: hand over"), and it is the
+agent that calls `request_handoff`. Code hands over in three cases where no LLM
 verdict can be trusted: the model is down after retries, the loop passes its step cap, or a
 check returns an invalid verdict (an item number outside the procedure, or evidence not found in
 the customer's words).
