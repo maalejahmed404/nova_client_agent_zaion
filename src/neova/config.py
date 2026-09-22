@@ -27,7 +27,6 @@ class Settings(BaseSettings):
 
     chat_model: str
     chat_model_fallback: str
-    judge_model: str
     embedding_model: str
     vision_model: str
     max_tokens: int = 800
