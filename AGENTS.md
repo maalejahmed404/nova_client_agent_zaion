@@ -13,7 +13,7 @@ This machine is Windows: PowerShell syntax, always through `uv run`.
 - Change only the files named in the prompt.
 - Never run the test suite or any long command; I run them and paste what fails.
 - Answer with the diff. No summary, no explanation of what you just wrote.
-
+- site the files you changed when you finish.
 ## Hard rules
 - Never call datetime.now(). Always `from neova.config import now` — the dataset is frozen on
   2026-08-25 and REFERENCE_NOW freezes the clock there.
@@ -38,3 +38,6 @@ This machine is Windows: PowerShell syntax, always through `uv run`.
 - Tests assert behaviour through the public function, never internals. One test, one claim.
   No mock of the thing under test.
 - Line length 100 (ruff), target py312.
+- All imports at the top of the file, never inside a function.
+- Tests patch a constant in the module that uses it, not only in neova.config:
+  `from neova.config import CACHE_DIR` copies the value at import time.
