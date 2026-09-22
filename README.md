@@ -1,27 +1,9 @@
 # Néova — customer-relations agent
 
-A LangGraph agent for a fictional French ISP. It answers in French from the documents in
-`corpus/`, reads and writes customer data through its own FastAPI service, books technician
-appointments, and hands over to a human advisor when the internal procedure says so.
-
 ## Embeddings: `qwen/qwen3-embedding-8b`
 
-Retrieval is hybrid: BM25 on French-stemmed tokens for exact names, prices and article numbers,
-plus dense vectors for meaning, fused by reciprocal rank. The dense side uses Qwen3-Embedding-8B:
-
-- **French.** It is multilingual by training and ranked first on MTEB-Multilingual at release;
-  many cheap embedding models are English-first and weaker on French paraphrase.
-- **Query instructions.** It takes a task instruction on the query side only
-  (`retrieve the support document section that answers it`). Customers write colloquial French
-  and the documents are formal; the instruction steers the query vector toward document-style
-  sections without re-embedding the corpus.
-- **Cost.** About $0.01 per million tokens. Vectors are cached by content hash in
-  `.cache/embeddings/`, so a rebuild only embeds what changed.
-
-It is not trusted alone: cosine similarity cannot tell answerable from unanswerable questions
-(see Evaluation), so BM25 carries the exact terms and the "no answer" decision is left to an LLM.
-The model is read from `EMBEDDING_MODEL`, and the index refuses to load if it was built with
-another model or other source files.
+Chosen for French: multilingual by training (first on MTEB multilingual at release), and a query-side instruction bridges colloquial customer French and the formal wording of the documents; paired with French-stemmed BM25 for exact terms.
+Measured recall on the 45-question French set is 0.97; a side-by-side comparison with another model (e.g. `mistralai/mistral-embed`) was not run.
 
 ## Run it
 
@@ -39,9 +21,31 @@ Then:
 uv run neova chat               # starts the API in the background and opens the conversation
 ```
 
-`uv run neova api` runs the API alone (docs at http://localhost:8000/docs). In the chat, typing
-a customer's full name from `data/neova_data.json` (e.g. `Patrick Doré`) sends their customer
-number and phone; the agent then verifies them through the API as usual.
+Evaluation and tests:
+
+```bash
+uv run python -m neova.rag.eval_retrieval            # retrieval + answer step on eval/retrieval_gold.jsonl
+uv run python -m neova.rag.eval_retrieval --no-llm   # retrieval only, no chat model call
+uv run pytest -q                                     # offline tests, scripted model
+```
+
+
+Scenarios to check that it works, one new chat each:
+
+| Messages | Expected |
+|---|---|
+| `Combien coûte la fibre 1 Gb/s ?` | 39,99 € / mois, from the 2026 grid |
+| `La fibre 1 Gb/s est-elle toujours en promo ?` | No: the 2026 grid replaces the 2024 promo, current price 39,99 € (contradictory documents) |
+| `Quels étaient les prix de la promo de rentrée 2024 ?` | The 2024 prices, presented as a past offer |
+| `Je vais saisir mon avocat.` | Immediate transfer, no question asked |
+| `Patrick Doré`, then `Combien je dois ?` | 39,99 €, read from his record |
+| `Je veux un technicien` → the agent asks for the reason → `Plus d'internet, voyant rouge fixe après deux redémarrages` → `Patrick Doré` → `oui` | A slot with its fees is proposed; booked only after `oui` |
+| `Ahmed Belkacem`, then `Je peux payer en plusieurs fois ?` | Transfer (payment plan) |
+
+To change customer during a chat, just type the other customer's full name: the conversation
+starts again, and nothing of the previous customer is kept.
+
+`challenges.md` lists one or two checks for every requirement of the brief.
 
 Models (set in `.env`): chat `google/gemini-2.5-flash` with fallback
 `mistralai/mistral-small-3.2-24b-instruct`, embeddings `qwen/qwen3-embedding-8b`, vision
@@ -168,14 +172,22 @@ filtered.
   LLM is not deterministic, so the same question can be answered once and transferred the next
   time, and a vague question can be answered by inference from a document that does not really
   cover it.
+- The agent can propose a technician when the visit is not justified. Ahmed reports a slow
+  connection; the agent proposes a slot at once, although his area has a degraded-network
+  incident and the box FAQ reserves a visit for a slow line "malgré un réseau déclaré nominal".
+  The API only blocks a full outage. In one run `post_review` fetched the incidents itself and
+  reasoned correctly, but only a check on the reply's claims (since removed) turned that into a
+  transfer, and for the wrong reason. Whether a visit is justified rests on the agent's prompt alone.
 
 ## With two more days
 
-1. Rework conversation memory so each question is judged on its own: the checks read the recent
+1. A clear plan for when a customer is entitled to a technician: check the area's incidents and
+   the FAQ's intervention cases before any proposal, and only then let the customer book.
+2. Rework conversation memory so each question is judged on its own: the checks read the recent
    transcript, so an earlier request can still weigh on how a later, unrelated one is treated.
-2. Improve `post_review`: measure its false transfers and misses on a labelled set, then tighten it.
-3. An end-to-end evaluation of the agent: scripted conversations checked on the API's records
+3. Improve `post_review`: measure its false transfers and misses on a labelled set, then tighten it.
+4. An end-to-end evaluation of the agent: scripted conversations checked on the API's records
    and on what the customer reads, with cases written by someone other than the author.
-4. Persist conversations (`SqliteSaver`) and expire API sessions.
-5. Langfuse tracing per node, with the evaluations wired in.
-6. Detect inconsistent customer records and hand them off instead of answering from one figure.
+5. Persist conversations (`SqliteSaver`) and expire API sessions.
+6. Langfuse tracing per node, with the evaluations wired in.
+7. Detect inconsistent customer records and hand them off instead of answering from one figure.
