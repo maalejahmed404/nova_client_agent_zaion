@@ -35,7 +35,7 @@ class Script:
         self.confirmation = graph.Confirmation(decision="yes", preference="")
         self.gesture = None
         self.ticket = SimpleNamespace(category="technical", motif="motif", summary="résumé", actions_taken=[], urgency="normal")
-        self.review = prompts.PostReviewVerdict(candidates=[], needs=[], documents_cover=True, advisor_conditions=[], unsupported_claims=[], reason="")
+        self.review = prompts.PostReviewVerdict(candidates=[], needs=[], documents_cover=True, advisor_conditions=[], reason="")
 
     def agent(self, messages):
         assert self.steps, "the scripted agent has no step left"
@@ -142,15 +142,6 @@ def test_answer_with_sources_from_this_turn_passes_the_checks(script, talk, monk
     assert "post_review" in script.calls and store.data["tickets"] == []
 
 
-def test_a_reply_the_documents_do_not_support_goes_to_a_human(script, talk):
-    script.review = script.review.model_copy(update={"unsupported_claims": ["Néova ne propose pas Netflix."]})
-    script.steps = [answer("Néova ne propose pas Netflix.")]
-    state = talk("Netflix est inclus ?")
-    assert state["trace"][-2:] == ["post_review", "handoff"] and len(store.data["tickets"]) == 1
-    assert state["reply"].startswith("transmis") and "Netflix" not in state["reply"]
-    assert "Néova ne propose pas Netflix." in script.blocks["post_review"]
-
-
 def test_every_reply_passes_the_after_review_check(script, talk):
     script.steps = [answer("Bonjour, que puis-je faire pour vous ?")]
     talk("bonjour")
@@ -173,7 +164,7 @@ def test_post_review_can_send_an_answer_to_a_human(script, talk, monkeypatch):
     monkeypatch.setattr(graph, "retrieve", lambda *a, **k: [SimpleNamespace(chunk=chunk)])
     monkeypatch.setattr(graph, "index", lambda: SimpleNamespace(by_id={"faq#x": chunk}))
     matched = [{"item": 2, "elements": [{"element": "panne après intervention", "established": True}]}]
-    script.review = prompts.PostReviewVerdict(candidates=matched, needs=[], documents_cover=False, advisor_conditions=[], unsupported_claims=[], reason="pas couvert")
+    script.review = prompts.PostReviewVerdict(candidates=matched, needs=[], documents_cover=False, advisor_conditions=[], reason="pas couvert")
     script.steps = [call("search_documents", question="q"), answer("réponse", [])]
     assert talk("question")["reply"].startswith("transmis")
 
@@ -332,9 +323,9 @@ def test_post_review_fetches_what_it_needs_then_judges(script, talk, monkeypatch
     monkeypatch.setattr(graph, "index", lambda: SimpleNamespace(by_id={"cgv#art13": chunk}))
     exemption = [{"item": 4, "elements": [{"element": "motif légitime invoqué", "established": True}]}]
     verdicts = iter([
-        prompts.PostReviewVerdict(candidates=exemption, documents_cover=False, advisor_conditions=[], unsupported_claims=[], reason="",
+        prompts.PostReviewVerdict(candidates=exemption, documents_cover=False, advisor_conditions=[], reason="",
                                   needs=[{"kind": "document", "query": "cas d'exonération des frais de résiliation"}]),
-        prompts.PostReviewVerdict(candidates=exemption, documents_cover=True, unsupported_claims=[], reason="relève d'un conseiller", needs=[],
+        prompts.PostReviewVerdict(candidates=exemption, documents_cover=True, reason="relève d'un conseiller", needs=[],
                                   advisor_conditions=[{"condition": "examen d'un justificatif", "met": "unknown"}]),
     ])
     original = script.ask
