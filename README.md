@@ -31,7 +31,8 @@ uv run pytest -q                                     # offline tests, scripted m
 
 
 Scenarios to check that it works, one new chat each:
-
+#  To change customer during a chat, just type the other customer's full name: the conversation 
+# starts again, and nothing of the previous customer is kept e.g Ahmed Belkacem.
 | Messages | Expected |
 |---|---|
 | `Combien coûte la fibre 1 Gb/s ?` | 39,99 € / mois, from the 2026 grid |
@@ -42,12 +43,9 @@ Scenarios to check that it works, one new chat each:
 | `Je veux un technicien` → the agent asks for the reason → `Plus d'internet, voyant rouge fixe après deux redémarrages` → `Patrick Doré` → `oui` | A slot with its fees is proposed; booked only after `oui` |
 | `Ahmed Belkacem`, then `Je peux payer en plusieurs fois ?` | Transfer (payment plan) |
 
-To change customer during a chat, just type the other customer's full name: the conversation
-starts again, and nothing of the previous customer is kept.
 
-`challenges.md` lists one or two checks for every requirement of the brief.
 
-Models (set in `.env`): chat `google/gemini-2.5-flash` with fallback
+Models : chat `google/gemini-2.5-flash` with fallback
 `mistralai/mistral-small-3.2-24b-instruct`, embeddings `qwen/qwen3-embedding-8b`, vision
 `google/gemini-2.5-flash` for the scanned sheet. The clock is frozen on the dataset's date
 (`REFERENCE_NOW`).
