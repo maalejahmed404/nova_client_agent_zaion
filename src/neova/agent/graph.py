@@ -139,7 +139,11 @@ def precheck(state: State) -> dict[str, Any]:
                     break
 
     if valid:
-        return {"next": "escalade", "matched_items": result.matched_items}
+        already = state.get("matched_items") or []
+        new_items = [m for m in result.matched_items if m not in already]
+        if new_items:
+            return {"next": "escalade", "matched_items": already + new_items}
+        return {"next": "agent"}
     return {"next": "agent"}
 
 
@@ -394,8 +398,20 @@ def outils(state: State) -> dict[str, Any]:
                     if not human_msg:
                         human_msg = ""
 
+                    last_human_idx = None
+                    for i, m in enumerate(state["messages"]):
+                        if m.type == "human":
+                            last_human_idx = i
+                    agent_msg = ""
+                    if last_human_idx is not None:
+                        for m in reversed(state["messages"][:last_human_idx]):
+                            if m.type == "ai" and m.content:
+                                agent_msg = m.content
+                                break
+
                     blocks = [
                         ("message_client", human_msg),
+                        ("message_agent", agent_msg),
                         ("proposition", proposal.get("offer", {})),
                         ("contexte", [m.content for m in state["messages"] if m.type == "human"]),
                     ]
