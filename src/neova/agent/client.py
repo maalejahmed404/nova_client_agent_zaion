@@ -86,14 +86,11 @@ class APIClient:
         """GET /incidents."""
         return self._request("GET", "/incidents")
 
-    def propose(
-        self, reason: str, override_reason: str | None = None, another_slot: bool = False
-    ) -> dict[str, Any]:
+    def propose(self, reason: str, another_slot: bool = False) -> dict[str, Any]:
         """POST /appointments/proposals."""
-        json: dict[str, Any] = {"reason": reason, "another_slot": another_slot}
-        if override_reason is not None:
-            json["override_reason"] = override_reason
-        return self._request("POST", "/appointments/proposals", json)
+        return self._request(
+            "POST", "/appointments/proposals", {"reason": reason, "another_slot": another_slot}
+        )
 
     def book(self, proposal_id: str, idempotency_key: str) -> dict[str, Any]:
         """POST /appointments with the Idempotency-Key header."""
