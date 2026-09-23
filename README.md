@@ -6,9 +6,14 @@ human advisor.
 
 ## Run it
 
+Requires `OPENROUTER_API_KEY` in `.env` (copy `.env.example`).
+
 ```bash
 uv run neova chat
 ```
+
+The first launch builds the document index (a few cents of embeddings); later launches reuse it,
+and it is rebuilt only if the corpus or the models change.
 
 ## Models
 

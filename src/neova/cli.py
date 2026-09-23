@@ -13,6 +13,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from neova.agent.graph import graph
 from neova.config import DATA_DIR, get_settings
+from neova.rag.index import StaleIndex, build_index, load_index
 
 app = typer.Typer(add_completion=False)
 
@@ -82,6 +83,12 @@ def api(port: int = 8000):
 
 @app.command()
 def chat(logs: bool = typer.Option(True, help="Affiche les nœuds et les outils exécutés.")):
+    try:
+        load_index()
+    except StaleIndex:
+        typer.echo("Préparation de la documentation (premier lancement)…")
+        build_index()
+
     url = get_settings().api_base_url.rstrip("/")
     own_api = not api_is_up(url)
     if own_api:
