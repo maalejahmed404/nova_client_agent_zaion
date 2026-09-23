@@ -33,6 +33,13 @@ def _get_index() -> tuple[list, Any]:
 
 MAX_TOOL_CALLS = 8
 
+CASE_REASONS = {
+    "voyant_rouge_persistant": "no_internet",
+    "cable_ou_prise_endommage": "no_internet",
+    "coupures_repetees": "no_internet",
+    "debit_insuffisant": "slow_internet",
+}
+
 CUSTOMER_NUMBER_RE = re.compile(r"\bNEO[ -]?(\d{5})\b", re.IGNORECASE)
 PHONE_RE = re.compile(r"(?<!\d)0\d([ .-]?\d{2}){4}(?!\d)")
 
@@ -79,11 +86,22 @@ def incidents_zone() -> None:
 
 @tool
 def proposer_rendez_vous(
-    reason: Literal["no_internet", "slow_internet", "installation", "equipment_swap"],
+    case: Literal[
+        "voyant_rouge_persistant",
+        "cable_ou_prise_endommage",
+        "coupures_repetees",
+        "debit_insuffisant",
+    ],
     another_slot: bool = False,
 ) -> None:
-    """Prépare un rendez-vous avec un technicien sans le réserver. Ne l'appeler qu'une fois que
-    la documentation et le client ont établi qu'une visite est justifiée.
+    """Prépare un rendez-vous avec un technicien sans le réserver. case est le cas documenté que
+    la situation du client établit :
+    - voyant_rouge_persistant : voyant rouge fixe persistant après deux redémarrages ;
+    - cable_ou_prise_endommage : jarretière optique ou prise optique visiblement endommagée ;
+    - coupures_repetees : plus de trois coupures par jour sur une semaine ;
+    - debit_insuffisant : débit mesuré inférieur à 30 % du débit souscrit sur plusieurs mesures
+      filaires.
+    Ne l'appeler qu'une fois que les mots du client établissent un de ces cas.
     another_slot est vrai lorsque le client refuse le créneau proposé."""
 
 
@@ -386,20 +404,40 @@ def outils(state: State) -> dict[str, Any]:
                 result_content = json.dumps(data, ensure_ascii=False)
 
             elif name == "proposer_rendez_vous":
-                data = _api_client.propose(
-                    reason=args.get("reason", ""),
-                    another_slot=args.get("another_slot", False),
-                )
-                key = str(uuid.uuid4())
-                proposal = {
-                    "offer": data,
-                    "idempotency_key": key,
-                    "proposal_id": data.get("proposal_id"),
-                    "customer_messages": len(
-                        [m for m in state["messages"] if m.type == "human"]
-                    ),
-                }
-                result_content = json.dumps(data, ensure_ascii=False)
+                if "dossier" not in facts:
+                    facts["dossier"] = _api_client.get_customer()
+
+                incidents_en_cours = []
+                if "fibre" not in facts["dossier"]["plan"].lower():
+                    result_content = (
+                        "Aucun rendez-vous ne peut être proposé : l'intervention d'un "
+                        "technicien ne concerne que les offres fibre."
+                    )
+                elif args["case"] in ("voyant_rouge_persistant", "coupures_repetees"):
+                    facts["incidents"] = _api_client.get_incidents()
+                    incidents_en_cours = [i for i in facts["incidents"] if i["phase"] != "planned"]
+
+                if incidents_en_cours:
+                    result_content = (
+                        "Aucun rendez-vous ne peut être proposé : un incident réseau est en "
+                        "cours sur la zone du client. Incidents : "
+                        + json.dumps(incidents_en_cours, ensure_ascii=False)
+                    )
+                elif not result_content:
+                    data = _api_client.propose(
+                        reason=CASE_REASONS[args["case"]],
+                        another_slot=args.get("another_slot", False),
+                    )
+                    key = str(uuid.uuid4())
+                    proposal = {
+                        "offer": data,
+                        "idempotency_key": key,
+                        "proposal_id": data.get("proposal_id"),
+                        "customer_messages": len(
+                            [m for m in state["messages"] if m.type == "human"]
+                        ),
+                    }
+                    result_content = json.dumps(data, ensure_ascii=False)
 
             elif name == "confirmer_rendez_vous":
                 if not proposal:
