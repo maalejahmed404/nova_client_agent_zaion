@@ -123,16 +123,6 @@ def create_proposal(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Client introuvable.",
         )
-    if customer.is_pro:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Les contrats Pro sont gérés par un autre service.",
-        )
-    if not customer.is_fibre:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Un rendez-vous technique ne s'applique qu'à la fibre.",
-        )
     if store.appointment_for(customer_id) is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -145,12 +135,6 @@ def create_proposal(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Aucun créneau disponible dans ce code postal.",
         )
-    incidents = store.incidents_for(customer.postal_code)
-    if any(incident.phase == "active" for incident in incidents) and request.override_reason is None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Aucun technicien ne peut être envoyé tant qu'un incident réseau est en cours.",
-        )
     if request.another_slot:
         if len(slots) < 2:
             raise HTTPException(
@@ -160,7 +144,7 @@ def create_proposal(
         slot = slots[1]
     else:
         slot = slots[0]
-    prop_id = proposal_id(customer_id, slot.slot_id, request.reason, request.override_reason)
+    prop_id = proposal_id(customer_id, slot.slot_id, request.reason)
     store.save_proposal(
         prop_id,
         {
@@ -169,7 +153,6 @@ def create_proposal(
             "start": slot.start,
             "end": slot.end,
             "reason": request.reason,
-            "override_reason": request.override_reason,
         },
     )
     return ProposalResponse(
@@ -203,12 +186,19 @@ def book_appointment(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="La clé d'idempotence a déjà été utilisée avec un autre corps.",
             )
-    proposal = store.take_proposal(request.proposal_id)
+    proposal = store.peek_proposal(request.proposal_id)
     if proposal is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="L'offre proposée a été modifiée.",
         )
+    slot = store.get_slot(proposal["slot_id"])
+    if slot is None or not slot.available or slot.is_past:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Ce créneau n'est plus disponible.",
+        )
+    store.take_proposal(request.proposal_id)
     appointment_id = secrets.token_urlsafe(16)
     appointment = Appointment(
         appointment_id=appointment_id,
@@ -230,7 +220,7 @@ def delete_appointment(
     appointment_id: str,
     customer_id: Annotated[str, Depends(session_customer)],
 ):
-    appointment = store.appointments.get(appointment_id)
+    appointment = store.get_appointment(appointment_id)
     if appointment is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

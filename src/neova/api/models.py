@@ -143,7 +143,6 @@ class VerifyResponse(BaseModel):
 
 class ProposalRequest(BaseModel):
     reason: str
-    override_reason: str | None = None
     another_slot: bool = False
 
     @field_validator("reason")
@@ -151,12 +150,6 @@ class ProposalRequest(BaseModel):
         allowed = ["no_internet", "slow_internet", "installation", "equipment_swap"]
         if v not in allowed:
             raise ValueError(f"Reason must be one of {allowed}")
-        return v
-
-    @field_validator("override_reason")
-    def validate_override_reason(cls, v):
-        if v is not None and v not in ["pto_damaged", "equipment_damaged"]:
-            raise ValueError("override_reason must be one of: pto_damaged, equipment_damaged")
         return v
 
 
