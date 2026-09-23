@@ -7,7 +7,7 @@ import pymupdf
 
 from neova.config import CORPUS_DIR
 
-from .models import Document, Element, Line, Table
+from .models import Document, Element, Line, Table, Chunk
 
 HEADER_FILL = (0.06, 0.46, 0.43)
 
@@ -777,32 +777,107 @@ def parse_markdown(path: Path, offline: bool = False) -> Document:
 
 
 def banner(doc: Document) -> str:
-    parts = [f"Source : {doc.doc_id}"]
-    
-    if doc.statut == "current":
-        status_part = "EN VIGUEUR"
-        if doc.effective_from:
-            status_part += f" depuis le {doc.effective_from}"
-        parts.append(status_part)
-    elif doc.statut == "deprecated":
-        status_part = "ARCHIVE"
+    if doc.statut == "deprecated":
         if doc.offer_window:
             from_date = doc.offer_window.get("from")
             to_date = doc.offer_window.get("to")
             if from_date and to_date:
-                status_part += f" · offre valable pour les souscriptions du {from_date} au {to_date}"
-        parts.append(status_part)
-    else:
-        parts.append("STATUT NON INDIQUÉ")
-    
-    if doc.supersedes:
-        parts.append(f"remplace {doc.supersedes}")
-    
-    if doc.updated:
-        parts.append(f"maj {doc.updated}")
-    
-    return f"[{' · '.join(parts)}]"
+                return f"ARCHIVE — offre valable du {from_date} au {to_date}, remplacée depuis."
+        return "ARCHIVE — offre passée, remplacée depuis."
+    elif doc.statut == "current" and doc.effective_from:
+        return f"EN VIGUEUR depuis le {doc.effective_from}."
+    return ""
 
+def _slug(text: str) -> str:
+    import unicodedata
+    text = unicodedata.normalize('NFKD', text)
+    text = ''.join(c for c in text if not unicodedata.combining(c))
+    text = text.lower()
+    text = re.sub(r'[^a-z0-9]+', '-', text)
+    text = text.strip('-')
+    return text
+
+def chunk_document(doc: Document) -> list[Chunk]:
+    chunks = []
+    shallowest = min((elem.level for elem in doc.elements if elem.kind == "heading"), default=0)
+    current_section_title_parts = []
+    section_elements: list[Element] = []
+    section_tables: list[Table] = []
+    section_pages: set[int] = set()
+    
+    def flush_section():
+        nonlocal current_section_title_parts, section_elements, section_tables, section_pages
+        if not section_elements:
+            return
+        section_title = doc.title if not current_section_title_parts else " > ".join(current_section_title_parts)
+        text_parts = []
+        text_parts.append("# description")
+        text_parts.append(doc.title)
+        banner_text = banner(doc)
+        if banner_text:
+            text_parts.append(banner_text)
+        if doc.preamble.strip():
+            text_parts.append(doc.preamble)
+        text_parts.append("")
+        
+        if doc.doc_id.startswith("faq-"):
+            text_parts.append("# demande de")
+        else:
+            text_parts.append("# section")
+        text_parts.append(section_title)
+        text_parts.append("")
+        
+        text_parts.append("# texte")
+        for elem in section_elements:
+            if elem.kind == "paragraph":
+                text_parts.append(elem.text)
+            elif elem.kind == "item":
+                text_parts.append(f"{elem.marker} {elem.text}" if elem.marker else elem.text)
+            elif elem.kind == "table" and elem.table:
+                text_parts.append(render_table(elem.table))
+            text_parts.append("")
+        
+        text = "\n".join(text_parts).strip()
+        slug = "preambule" if not current_section_title_parts else _slug(section_title)
+        chunk_id = f"{doc.doc_id}#{slug}"
+        
+        chunks.append(Chunk(
+            chunk_id=chunk_id,
+            doc_id=doc.doc_id,
+            title=doc.title,
+            heading=section_title,
+            text=text,
+            search_text=text,
+            tables=section_tables.copy(),
+            pages=sorted(section_pages),
+            audience=doc.audience,
+            statut=doc.statut,
+            updated=doc.updated,
+            effective_from=doc.effective_from,
+            offer_window=doc.offer_window,
+            supersedes=doc.supersedes
+        ))
+        section_elements.clear()
+        section_tables.clear()
+        section_pages.clear()
+    
+    current_section_title_parts = []
+    for elem in doc.elements:
+        if elem.kind == "heading":
+            flush_section()
+            if elem.level == shallowest:
+                current_section_title_parts = [elem.text]
+            else:
+                current_section_title_parts = current_section_title_parts[:elem.level - shallowest] + [elem.text]
+        else:
+            section_elements.append(elem)
+            if elem.pages:
+                section_pages.update(elem.pages)
+            if elem.kind == "table" and elem.table:
+                section_tables.append(elem.table)
+    
+    flush_section()
+    return chunks
 
 def render_table(table: Table) -> str:
     if not table.headers:
