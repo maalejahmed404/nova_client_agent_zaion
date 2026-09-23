@@ -27,7 +27,8 @@ This machine is Windows: PowerShell syntax, always through `uv run`.
 ## How the agent graph works
 - Six nodes, named in French: precheck, agent, outils, postreview, escalade, fin.
   precheck goes to agent or escalade. agent goes to outils or postreview. outils goes to agent
-  or postreview depending on after_tools. postreview goes to outils, agent, escalade or fin. escalade goes to fin.
+  or postreview depending on after_tools, or to escalade when the commercial-gesture decision
+  requires a human. postreview goes to outils, agent, escalade or fin. escalade goes to fin.
 - Every node sets state["next"] explicitly before returning. A router that finds no choice
   raises, it never falls back on the previous value.
 - Any node that routes to outils sets after_tools at the same time, naming the node outils
@@ -46,20 +47,31 @@ This machine is Windows: PowerShell syntax, always through `uv run`.
 - The model picks the reads, the code owns the writes. confirmer_rendez_vous is never
   executed until a separate structured call over confirmation.txt says the customer clearly
   accepted; otherwise the tool answers that no confirmation was given.
+- Exception to the model picking the reads: when the customer's message contains a
+  customer number and a phone, precheck verifies the identity itself, in code before its
+  model call, so the check sees the customer file.
 - A booking carries the idempotency key stored with the proposal. If the API fails, the key
   stays in the state and is replayed next turn, so a retry can never book twice.
+- proposer_rendez_vous takes one of the documented technician-visit cases, not a free reason.
+  It proposes nothing for a non-fibre plan, nor, for the cases voyant_rouge_persistant
+  and coupures_repetees, while a network incident is in progress in the customer's zone (a
+  planned maintenance does not block). The case maps to the API reason in CASE_REASONS.
 - Eight tool calls per turn at most; beyond that the turn goes to postreview.
 - postreview is a structured call over post_review.txt. It may ask for what it misses, and
-  the code fetches it, but only one such round per turn. If that call itself fails, go to
+  the code fetches it, but only one such round per turn. If it finds the answer not covered
+  while no documentation search ran this turn and that round is still unused, it asks for a
+  search with the customer's message and the proposed answer instead of escalating; the agent then rewrites. If that call itself fails, go to
   escalade: transferring beats answering wrong.
 - escalade builds the ticket with ticket.txt, posts it, then writes the message with
   handoff_message.txt, filling <delai> from the API's callback_eta. If the API is down,
   announce the transfer without a delay rather than inventing one. Never escalate twice in
   the same turn.
+  When precheck recognises only situations already transferred in this conversation,
+  it sets escalated and escalade answers with a fixed reminder, without a new ticket
+  and without the agent.
 - The agent never announces its own transfer: it does not decide it.
 - When the customer verifies a different identity, wipe session, customer_id, facts,
   proposal and passages. Keep the messages.
-- After two failed identity checks, stop insisting and escalate.
 
 ## Style
 - Type hints on every signature. Pydantic models at the API boundary, dataclasses inside.

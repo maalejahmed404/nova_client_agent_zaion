@@ -1,192 +1,171 @@
-# Néova — customer-relations agent
+# Néova, customer-relations agent
 
-## Embeddings: `qwen/qwen3-embedding-8b`
-
-Chosen for French: multilingual by training (first on MTEB multilingual at release), and a query-side instruction bridges colloquial customer French and the formal wording of the documents; paired with French-stemmed BM25 for exact terms.
-Measured recall on the 45-question French set is 0.97; a side-by-side comparison with another model (e.g. `mistralai/mistral-embed`) was not run.
+A LangGraph agent that answers Néova Télécom customers in French: retrieval over `corpus/`, a
+FastAPI service over `data/` (with a state-changing booking endpoint), and a transfer path to a
+human advisor.
 
 ## Run it
 
-First run:
-
 ```bash
-cp .env.example .env            # put the OpenRouter key and the model names there
-uv sync
-uv run python -m neova.rag.index --build   # parses and embeds the corpus (a few cents)
+uv run neova chat
 ```
 
-Then:
+## Models
 
-```bash
-uv run neova chat               # starts the API in the background and opens the conversation
-```
+Chat `google/gemini-2.5-flash`, fallback `mistralai/mistral-small-3.2-24b-instruct`, vision
+`google/gemini-2.5-flash` for the scanned roaming sheet, all set in environment variables. The
+clock is frozen on the dataset's date (`REFERENCE_NOW`, 25/08/2026 10:00).
 
-Evaluation and tests:
-
-```bash
-uv run python -m neova.rag.eval_retrieval            # retrieval + answer step on eval/retrieval_gold.jsonl
-uv run python -m neova.rag.eval_retrieval --no-llm   # retrieval only, no chat model call
-uv run pytest -q                                     # offline tests, scripted model
-```
-
-
-Scenarios to check that it works, one new chat each:
-#  To change customer during a chat, just type the other customer's full name: the conversation 
-# starts again, and nothing of the previous customer is kept e.g Ahmed Belkacem.
-| Messages | Expected |
-|---|---|
-| `Combien coûte la fibre 1 Gb/s ?` | 39,99 € / mois, from the 2026 grid |
-| `La fibre 1 Gb/s est-elle toujours en promo ?` | No: the 2026 grid replaces the 2024 promo, current price 39,99 € (contradictory documents) |
-| `Quels étaient les prix de la promo de rentrée 2024 ?` | The 2024 prices, presented as a past offer |
-| `Je vais saisir mon avocat.` | Immediate transfer, no question asked |
-| `Patrick Doré`, then `Combien je dois ?` | 39,99 €, read from his record |
-| `Je veux un technicien` → the agent asks for the reason → `Plus d'internet, voyant rouge fixe après deux redémarrages` → `Patrick Doré` → `oui` | A slot with its fees is proposed; booked only after `oui` |
-| `Ahmed Belkacem`, then `Je peux payer en plusieurs fois ?` | Transfer (payment plan) |
-
-
-
-Models : chat `google/gemini-2.5-flash` with fallback
-`mistralai/mistral-small-3.2-24b-instruct`, embeddings `qwen/qwen3-embedding-8b`, vision
-`google/gemini-2.5-flash` for the scanned sheet. The clock is frozen on the dataset's date
-(`REFERENCE_NOW`).
+**Embeddings: `qwen/qwen3-embedding-8b`.** Chosen for French: multilingual by training (first on
+MTEB multilingual at release), and a query-side instruction bridges colloquial customer French
+and the formal wording of the documents; paired with French-stemmed BM25 for exact terms.
+Measured full-evidence recall on the 45-question French set is 0.95; a side-by-side comparison
+with another model was not run.
 
 ## The graph
 
-```
-precheck ──match──▶ handoff ──▶ END
-   │
-   ▼
- agent ⇄ tools ──request_handoff──▶ handoff
-   │        └────booking confirmed──▶ END
-   │
-   ▼
-post_review ──human──▶ handoff        otherwise ──▶ END
-```
-
 ![graph](docs/graph.png)
 
-One run per customer message; `MemorySaver` keeps the conversation (messages, session, pending
-proposal, ticket) between messages. Conversations do not survive a restart.
+Dotted arrows are conditional: each node names the next one. `postreview` goes to `outils` to fetch
+a missing piece: a document returns to `agent`, which rewrites; a customer fact returns to
+`postreview`.
 
-- **precheck**: an LLM checks the "transfert immédiat" section of the escalation procedure,
-  verbatim. A match goes straight to **handoff**, before any identification.
-- **agent ⇄ tools** (ReAct): one LLM with `bind_tools` picks its tools: `search_documents`,
-  `verify_customer`, `get_customer`, `get_incidents`, `propose_appointment`, `book_appointment`,
-  `assess_gesture`, `request_handoff`. Reads are free; the writes are gated by code:
-  `propose_appointment` picks the slot itself, `book_appointment` runs only if a proposal is
-  pending and a structured check reads the customer's message as a clear yes, a 500 during the
-  write is replayed with the same idempotency key on the next message, and once the booking API
-  succeeds the customer gets a confirmation that restates the slot and fees of the accepted
-  proposal.
-- **post_review**: an LLM checks the replies the agent writes against the "transfert après
-  examen" section before the customer reads them; booking confirmations and transfer messages
-  come from their own paths. It may ask once for a missing document or customer fact, which code
-  fetches; it transfers only if the documents cannot settle the case.
-- **handoff**: the ticket is drafted, created with an idempotency key, then the delay the API
-  returned is announced. Each transfer creates one ticket; retrying a transfer whose result is
-  uncertain reuses the same idempotency key, so it never creates a duplicate. A failed creation
-  is never announced.
+- **precheck**: if the customer's message holds a customer number and a phone, code verifies them
+  with the API and stores the customer file in the state. An LLM then checks the seven "transfert
+  immédiat" situations of the escalation procedure (GDPR, legal threat, death, fraud, Pro contract,
+  minor, distress) on the new message and the file. Its quote must appear in the customer's
+  messages or in the file, otherwise it is ignored. A situation already transferred in the
+  conversation gets a fixed reminder and no new ticket. If this LLM call fails, the message goes
+  to the agent.
+- **agent and outils**: ReAct. The chat model has 7 tools bound (`chercher_documentation`,
+  `verifier_identite`, `dossier_client`, `incidents_zone`, `proposer_rendez_vous`,
+  `confirmer_rendez_vous`, `verifier_geste_commercial`). Tool bodies are empty: the model only
+  requests them, and `outils` executes each request with its own checks. After 8 tool calls in a
+  turn, further requests are dropped and the turn goes to postreview.
+- **Booking**: a proposal needs one of the four documented cases, a fibre plan, and, for the cases
+  "persistent red light" and "repeated cuts", no incident already started in the zone. A booking
+  needs a customer message sent after the proposal, then a separate LLM check that the customer
+  accepted, which reads the agent's last message and rejects the acceptance if the 69 € condition
+  was not announced there. If the booking API fails, the proposal and its idempotency key stay in
+  the state; the next confirmation reuses the same key without asking the customer again, so a
+  retry never books twice.
+- **Commercial gesture**: a separate LLM applies the internal policy to the customer's request and
+  file. The agent only receives the outcome to tell the customer. When the policy sends the case
+  to level 2, puts it out of scope, or cannot decide, the graph goes straight to `escalade`.
+- **postreview**: every claim of the agent's reply needs a source: customer facts in the file or in
+  this turn's tool results, rules in the retrieved documents. It may fetch one missing piece per
+  turn. If the reply is not covered, no documentation search ran this turn and that fetch is still
+  unused, code runs a search and the agent rewrites. A reply still not covered, a "transfert après
+  examen" case, or a failure of this LLM call goes to `escalade`.
+- **escalade**: an LLM drafts the ticket, code posts it, and another LLM writes the transfer
+  message with the callback delay returned by the API. If the ticket API is down, the transfer is
+  announced without a delay rather than an invented one.
 
-The decision to hand over is made by an LLM: `precheck` before the work, the agent during it,
-`post_review` after it. Tools never route to a human themselves: they report the outcome
-("the contract is professional", "verification refused a second time: hand over"), and it is the
-agent that calls `request_handoff`. Code hands over in three cases where no LLM
-verdict can be trusted: the model is down after retries, the loop passes its step cap, or a
-check returns an invalid verdict (an item number outside the procedure, or evidence not found in
-the customer's words).
+State lives in `MemorySaver`, one thread per conversation; it does not survive a restart.
 
 ## Evaluation
 
-A hand-written set in `eval/`, run with the real models: 45 questions written from the PDFs, 37
-with an answer in the corpus, 8 close to the topics but without one
-(`uv run python -m neova.rag.eval_retrieval`).
-
-**Retrieval** (the `search_documents` path the agent uses):
+**Retrieval.** 45 hand-written French questions (37 answerable, 8 not),
+`uv run python -m neova.rag.eval_retrieval`:
 
 | Measure | Result |
 |---|---|
-| Full-evidence recall: every section the answer needs is in the context | **0.97** (36/37) |
-| MRR of the first expected section | 0.84 |
-| Archive (deprecated) sections returned without a reason | **0** |
-| FAQ questions asked in other words than the document, section found | 10/10 |
+| Full-evidence recall (every needed section retrieved) | **0.95** |
+| Any-evidence recall | 0.97 |
+| MRR of the first expected section | 0.82 |
+| Archived sections returned without a reason | **0** |
 
-**Answer step** (offline, `rag/answer.py`, not the agent's path). The graph writes its own
-replies; these rows measure what the retrieved context supports through a reference answer step,
-not the agent.
+The two misses: a "lots of data" mobile question buried under the roaming sheet, and a gold line
+whose contract legitimately reaches the archived promo. Without the status filter, "combien coûte
+la fibre 1 Gb/s" would return the 2024 promo price (24,99 €): it wins both rankings. A similarity
+threshold cannot detect unanswerable questions: the two score ranges overlap.
 
-| Measure | Result |
-|---|---|
-| Table questions, correct value in the answer | 14/15 (the miss is the retrieval miss above) |
-| "Not in corpus" on the 8 unanswerable questions | **8/8** |
-| Answerable questions refused | 4/37: one retrieval miss, one needing contract data, one caution on promo vs. grid price, one real error (Pro offers) |
+**Agent.** The agent was evaluated through manual conversations rather than an automated
+pipeline. Retrieval has a single correct answer per question and lends itself to a metric; the
+agent's quality lies in whole exchanges (which tool it calls, when it transfers, what it tells the
+customer), which I found more reliable to judge by reading them. Testing concentrated on the flows
+that carry risk: network failures, technician booking, billing, immediate and reviewed transfers,
+and contradictory documents. The representative scenarios below all pass; run each in a new chat,
+typing a customer's full name to identify:
 
-Best cosine similarity alone cannot separate the two groups: a threshold above every
-unanswerable question (0.703) would also reject 11 answerable ones. Adding an LLM-written
-sentence version of each table to the index raised recall from 0.94 to 0.97; a second prompt
-asking for customer-style descriptions did worse (0.95) and was reverted.
+| Customer | Message(s) | Expected |
+|---|---|---|
+| `Camille Rousseau` | `Je n'ai plus internet, le voyant clignote en rouge.` | Outage in her area, estimated back at 18:00; no reboot, no technician |
+| `Patrick Doré` | `Mon voyant est rouge fixe.` | No incident in Lille: the restart procedure |
+| `Léa Nguyen` | `Mon voyant est orange.` | Degraded connection; may mention tomorrow's planned maintenance |
+| | `Je veux une copie de toutes les données que vous avez sur moi.` | Immediate transfer, no question asked |
+| | `Supprimez mon compte et toutes mes données, j'invoque le RGPD.` | Immediate transfer |
+| | `Je vais saisir le médiateur des communications électroniques.` | Immediate transfer |
+| `Patrick Doré` | `Mon voyant est rouge fixe, j'ai déjà redémarré deux fois à dix minutes d'intervalle.` → `oui` | Friday 28/08 9h-11h proposed with the 69 € condition; booked only after `oui` |
+| `Patrick Doré` | same first message → `Pas ce créneau.` | Monday 31/08 14h-16h proposed |
+| | `La fibre 1 Gb/s est toujours en promo à 24,99 € ?` | No: the 2024 offer is over, current price 39,99 € |
+| | `Quels étaient les prix de la promo de rentrée 2024 ?` | 2024 prices, presented as a past offer |
+| | `Combien coûte la fibre 1 Gb/s ?` | 39,99 €/month, 12 or 24-month commitment |
+| | `Combien coûte l'option décodeur TV ?` | 5 €/month (a table whose columns are shifted in the PDF) |
 
-Spend so far: about $2.92 of the $10, coding assistant included.
+**Limits of this evaluation.** Coverage is deliberate, not exhaustive: less frequent paths
+(identity changes mid-conversation, API outages during a booking, rarer transfer situations) were
+checked only occasionally, and a systematic pass over every scenario was out of reach in the time
+available. Without a pass rate, the results are qualitative. The failures that remain are few and
+share two roots: prompt instructions the model does not always follow, and the model's own
+interpretation. In practice it can explain an amount by listing possible causes instead of
+computing it from the customer file, repeat a question already answered, or answer before
+searching the documentation. Each of these is caught by `postreview` only when it leaves a claim
+without a source.
 
 ## Three design decisions
 
-**1. The LLM chooses its tools; the code owns the writes.** *Revised.* The first version had a
-planner node deciding route, identification and clarification before any lookup. That was right
-about writes and wrong about reads: manual testing produced requests the planner could not
-classify without information it did not have yet (a greeting, "quels sont les autres créneaux",
-identifiers typed unasked), and each fix added a node. The rewrite keeps the guarantees in code
-around the writes (explicit yes, stored proposal, idempotency key, replay) and lets the agent
-call the read tools freely. *Traded away:* determinism of the path. The checks aim to limit
-unsupported answers and unconfirmed actions; how reliable they are end to end is still to be
-measured.
+**1. ReAct with code-owned writes, not a state machine.** I first designed a state machine: safer,
+and the LLM never decides when a tool is needed. Covering every case that way proved too complex in
+the time available, so the model chooses its reads and code guards every write (proposal
+conditions, explicit acceptance, idempotency, replay). *Traded away:* a deterministic path: the
+model sometimes skips a tool it should call, as noted in the evaluation.
 
-**2. Internal documents are prompt context for decision nodes, never retrieval material.**
-The two internal PDFs (escalation procedure, commercial-gesture policy) are excluded from the
-index by their own `audience: internal` header. `agent/build_prompts.py` copies their sections
-verbatim into five static templates, one per decision node; each node's output is a closed
-schema (situation numbers, condition statuses). The agent never sees these rules, only the
-decision nodes do. *Traded away:* the model applies numeric rules ("48 h", "6 mois") itself.
-Code overrides what the data settles (an unavailable gesture history can never yield
-"eligible", a positive balance can never be "no unpaid balance").
+**2. When to escalate: two LLM gates around the agent, and no answer without a source.** The
+escalation procedure splits into cases to transfer before any work and cases to handle first, then
+transfer if the rules do not settle them. The graph mirrors that split: `precheck` applies the
+first list before the agent runs, `postreview` the second one after it has written its reply. The
+same gate settles unanswerable questions: every claim in a reply must come from the customer file,
+a tool result or a retrieved document, and a reply that cannot be sourced is transferred rather
+than sent. The procedure and the gesture policy are internal documents, never indexed, so the
+agent cannot quote their thresholds; they are copied into the prompts of the nodes that apply
+them, and the conditions of a technician visit are written in code, which was reliable given how
+small these documents are. *Traded away:* cost, latency and some over-transfer. Each message costs
+three to six LLM calls, and a correct reply the gate cannot source is transferred anyway. A
+changed document also means editing prompts or code.
 
-**3. Contradictions are resolved by document status before search, not by the model.**
-Each chunk carries metadata read from its own document: status, dates, offer window. The only
-contradiction in the corpus (the 2024 promo prices vs. the 2026 grid) is handled by filtering
-`deprecated` chunks out of every search; the archive is searched only for an explicit historical
-question or a customer whose contract started inside the offer window, and is then shown with an
-ARCHIVE banner. *Traded away:* a future obsolete document without a status header would not be
-filtered.
+**3. Contradictions resolved by document status before search.** Each chunk carries its
+document's status, dates and offer window; deprecated chunks are filtered out unless the question
+is historical or the customer's contract started inside the offer window. *Traded away:* a future
+obsolete document without a status header would not be filtered.
 
-## What's broken or unfinished
+## What's broken
 
-- The agent has no automated end-to-end evaluation: only retrieval is measured, and the graph is
-  covered by offline tests with a scripted model.
-- A customer record is inconsistent (balance 39,99 € vs. an unpaid invoice of 52,49 €); the agent
-  answers from one of the two without flagging it.
-- A request the documents reserve to an advisor (e.g. a payment plan above the threshold) is
-  transferred without first restating the documented rule to the customer.
-- The FAQ says technicians work Tuesday to Saturday; the API offers a Monday slot. The API is
-  treated as the system of record.
-- Deciding that the corpus has no answer is left to an LLM. A similarity threshold was tried and
-  rejected (see Evaluation); an NLI check was considered but set aside for other features. The
-  LLM is not deterministic, so the same question can be answered once and transferred the next
-  time, and a vague question can be answered by inference from a document that does not really
-  cover it.
-- The agent can propose a technician when the visit is not justified. Ahmed reports a slow
-  connection; the agent proposes a slot at once, although his area has a degraded-network
-  incident and the box FAQ reserves a visit for a slow line "malgré un réseau déclaré nominal".
-  The API only blocks a full outage. In one run `post_review` fetched the incidents itself and
-  reasoned correctly, but only a check on the reply's claims (since removed) turned that into a
-  transfer, and for the wrong reason. Whether a visit is justified rests on the agent's prompt alone.
+- **LLM misbehaviour grows with the conversation.** As the history lengthens, the model invents
+  calculations, repeats questions already answered, offers actions its tools cannot do, and does
+  not always chain tools. Prompts are the main lever and must be very well written; they are not
+  tuned enough yet.
+- postreview checks that claims have a source, not that they are correct, and lets any question
+  to the customer through.
+- The rewrite path leaves the rejected draft in the history.
+- Not production-grade: one HTTP client and one API session shared by every conversation (safe
+  with one chat per process, not with concurrent ones), in-memory state only, and the design leans
+  on the state to remember what was done rather than on persisted records.
+- precheck compares the quote character by character: a curly apostrophe can cancel a mandatory
+  transfer. Identifiers written `+33 …` are not recognised by precheck.
+- Transfers decided by postreview are not remembered: repeating the request opens a second ticket.
+- The FAQ says technicians work Tuesday to Saturday; the API offers a Monday slot and is treated as
+  the system of record. There is no cancellation tool.
 
 ## With two more days
 
-1. A clear plan for when a customer is entitled to a technician: check the area's incidents and
-   the FAQ's intervention cases before any proposal, and only then let the customer book.
-2. Rework conversation memory so each question is judged on its own: the checks read the recent
-   transcript, so an earlier request can still weigh on how a later, unrelated one is treated.
-3. Improve `post_review`: measure its false transfers and misses on a labelled set, then tighten it.
-4. An end-to-end evaluation of the agent: scripted conversations checked on the API's records
-   and on what the customer reads, with cases written by someone other than the author.
-5. Persist conversations (`SqliteSaver`) and expire API sessions.
-6. Langfuse tracing per node, with the evaluations wired in.
-7. Detect inconsistent customer records and hand them off instead of answering from one figure.
+1. A design that covers every known flow explicitly (failure, booking, billing, termination,
+   moving) as states, keeping the free agent for open questions.
+2. Test-driven prompt work: run the scenarios automatically, fix the prompt behind each failure,
+   measure again. Tests are what expose a weak prompt.
+3. An automated end-to-end evaluation with a pass rate and error analysis, traced in Langfuse.
+4. Production practices as a priority: one API session per conversation, a persistent
+   checkpointer, session expiry, persisted records of actions.
+5. A correctness check in postreview, and a rewrite path that drops the rejected draft.
+
+Spend: about $9.7 of the $10, coding assistant included.
