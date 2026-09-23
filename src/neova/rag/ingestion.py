@@ -1,11 +1,12 @@
 import hashlib
 import re
 import sys
+import json
 from pathlib import Path
 
 import pymupdf
 
-from neova.config import CORPUS_DIR
+from neova.config import CORPUS_DIR, CACHE_DIR, PROJECT_ROOT
 
 from .models import Document, Element, Line, Table, Chunk
 
@@ -894,60 +895,159 @@ def render_table(table: Table) -> str:
     return "\n".join([header_row, separator] + rows)
 
 
-if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: uv run python -m neova.rag.ingestion <pdf_file>")
-        sys.exit(1)
+def _compute_fingerprint(pdf_files: list[Path], png_files: list[Path]) -> str:
+    source_files: list[tuple[str, str]] = []
+    
+    for file_path in pdf_files:
+        with open(file_path, "rb") as f:
+            file_hash = hashlib.sha256(f.read()).hexdigest()
+        source_files.append((str(file_path.relative_to(PROJECT_ROOT)), file_hash))
+    
+    for file_path in png_files:
+        with open(file_path, "rb") as f:
+            file_hash = hashlib.sha256(f.read()).hexdigest()
+        source_files.append((str(file_path.relative_to(PROJECT_ROOT)), file_hash))
+    
+    source_files.sort(key=lambda x: x[0])
+    fingerprint_data = "\n".join(f"{name}:{hash}" for name, hash in source_files)
+    return hashlib.sha256(fingerprint_data.encode()).hexdigest()
 
-    pdf_path = CORPUS_DIR / sys.argv[1]
-    if not pdf_path.exists():
-        print(f"Fichier introuvable dans corpus/ : {sys.argv[1]}")
-        sys.exit(1)
 
-    lines, drawings, _ = layout(pdf_path)
-    tables = find_tables(lines, drawings)
-
-    if not tables:
-        print("No tables found.")
-    else:
-        print(f"Found {len(tables)} table(s):")
-        for i, table in enumerate(tables, 1):
-            print(f"\nTable {i} (page {table.page}):")
-            print("Headers:", table.headers)
-            print("Rows:")
-            for row in table.rows:
-                print("  ", row)
-
-    tables_line_ids = set()
-    for table in tables:
-        tables_line_ids.update(table.line_ids)
-
-    body_size, heading_levels = heading_levels(lines, tables_line_ids)
-    print(f"\nBody size: {body_size}")
-    print("Heading levels:")
-    for size, level in sorted(heading_levels.items(), key=lambda x: x[0], reverse=True):
-        print(f"  {size} -> H{level}")
-
-    print("\nHeading lines:")
-    for idx, line in enumerate(lines):
-        if idx in tables_line_ids:
+def build_corpus(offline: bool = False) -> list[Chunk]:
+    all_chunks: list[Chunk] = []
+    
+    corpus_dir = CORPUS_DIR
+    if not corpus_dir.exists():
+        return []
+    
+    pdf_files = sorted(corpus_dir.glob("*.pdf"))
+    png_files = sorted(corpus_dir.glob("*.png"))
+    
+    for file_path in pdf_files:
+        doc = parse_pdf(file_path)
+        if doc.audience != "public":
             continue
-        if line.size in heading_levels:
-            level = heading_levels[line.size]
-            print(f"  H{level}: {line.text}")
+        chunks = chunk_document(doc)
+        all_chunks.extend(chunks)
+    
+    for file_path in png_files:
+        doc = parse_markdown(file_path, offline=offline)
+        if doc.audience != "public":
+            continue
+        chunks = chunk_document(doc)
+        all_chunks.extend(chunks)
+    
+    corpus_cache_dir = CACHE_DIR / "corpus"
+    corpus_cache_dir.mkdir(parents=True, exist_ok=True)
+    
+    corpus_json_path = corpus_cache_dir / "corpus.json"
+    with open(corpus_json_path, "w", encoding="utf-8") as f:
+        json.dump([chunk.to_dict() for chunk in all_chunks], f, ensure_ascii=False, indent=2)
+    
+    fingerprint_hash = _compute_fingerprint(pdf_files, png_files)
+    fingerprint_path = corpus_cache_dir / "fingerprint.txt"
+    with open(fingerprint_path, "w", encoding="utf-8") as f:
+        f.write(fingerprint_hash)
+    
+    return all_chunks
 
-    print("\n=== parse_pdf ===")
-    doc = parse_pdf(pdf_path)
-    print(f"Title: {doc.title}")
-    print(f"Audience: {doc.audience}")
-    print(f"Statut: {doc.statut}")
-    print(f"Preamble: {doc.preamble[:200]}" if doc.preamble else "Preamble: (empty)")
-    print("\nElements:")
-    for elem in doc.elements:
-        if elem.kind == "table":
-            preview = f"<table> {elem.table.headers if elem.table else []}"
-        elif elem.kind == "heading":
-            preview = f"<heading> L{elem.level} {elem.text[:80]}"
+
+if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser()
+    parser.add_argument("file", nargs="?", help="Single file to debug")
+    parser.add_argument("--offline", action="store_true", help="Run build_corpus offline")
+    args = parser.parse_args()
+    
+    if args.file:
+        file_path = CORPUS_DIR / args.file
+        if not file_path.exists():
+            print(f"Fichier introuvable dans corpus/ : {args.file}")
+            sys.exit(1)
+        
+        if file_path.suffix.lower() == ".pdf":
+            lines, drawings, _ = layout(file_path)
+            tables = find_tables(lines, drawings)
+            
+            if not tables:
+                print("No tables found.")
+            else:
+                print(f"Found {len(tables)} table(s):")
+                for i, table in enumerate(tables, 1):
+                    print(f"\nTable {i} (page {table.page}):")
+                    print("Headers:", table.headers)
+                    print("Rows:")
+                    for row in table.rows:
+                        print("  ", row)
+            
+            tables_line_ids = set()
+            for table in tables:
+                tables_line_ids.update(table.line_ids)
+            
+            body_size, heading_levels = heading_levels(lines, tables_line_ids)
+            print(f"\nBody size: {body_size}")
+            print("Heading levels:")
+            for size, level in sorted(heading_levels.items(), key=lambda x: x[0], reverse=True):
+                print(f"  {size} -> H{level}")
+            
+            print("\nHeading lines:")
+            for idx, line in enumerate(lines):
+                if idx in tables_line_ids:
+                    continue
+                if line.size in heading_levels:
+                    level = heading_levels[line.size]
+                    print(f"  H{level}: {line.text}")
+            
+            print("\n=== parse_pdf ===")
+            doc = parse_pdf(file_path)
+            print(f"Title: {doc.title}")
+            print(f"Audience: {doc.audience}")
+            print(f"Statut: {doc.statut}")
+            print(f"Preamble: {doc.preamble[:200]}" if doc.preamble else "Preamble: (empty)")
+            print("\nElements:")
+            for elem in doc.elements:
+                if elem.kind == "table":
+                    preview = f"<table> {elem.table.headers if elem.table else []}"
+                elif elem.kind == "heading":
+                    preview = f"<heading> L{elem.level} {elem.text[:80]}"
+                else:
+                    preview = f"<{elem.kind}> {elem.text[:80]}"
+                print(f"  {preview}")
         else:
-            preview = f"<{elem.kind}> {elem.text[:80]}"
-        print(f"  {preview}")
+            doc = parse_markdown(file_path, offline=args.offline)
+            print(f"Title: {doc.title}")
+            print(f"Audience: {doc.audience}")
+            print(f"Statut: {doc.statut}")
+            print(f"Preamble: {doc.preamble[:200]}" if doc.preamble else "Preamble: (empty)")
+            print("\nElements:")
+            for elem in doc.elements:
+                if elem.kind == "table":
+                    preview = f"<table> {elem.table.headers if elem.table else []}"
+                elif elem.kind == "heading":
+                    preview = f"<heading> L{elem.level} {elem.text[:80]}"
+                else:
+                    preview = f"<{elem.kind}> {elem.text[:80]}"
+                print(f"  {preview}")
+    else:
+        chunks = build_corpus(offline=args.offline)
+        
+        corpus_cache_dir = CACHE_DIR / "corpus"
+        corpus_json_path = corpus_cache_dir / "corpus.json"
+        fingerprint_path = corpus_cache_dir / "fingerprint.txt"
+        
+        pdf_count = len(list(CORPUS_DIR.glob("*.pdf")))
+        png_count = len(list(CORPUS_DIR.glob("*.png")))
+        total_docs = pdf_count + png_count
+        
+        docs_with_chunks = len({chunk.doc_id for chunk in chunks})
+        internal_count = total_docs - docs_with_chunks
+        chunk_count = len(chunks)
+        table_count = sum(len(chunk.tables) for chunk in chunks)
+        
+        print(f"Documents lus : {total_docs}")
+        print(f"Documents internes ignorés : {internal_count}")
+        print(f"Fragments générés : {chunk_count}")
+        print(f"Tableaux extraits : {table_count}")
+        print(f"Corpus écrit dans : {corpus_json_path}")
+        print(f"Empreinte écrite dans : {fingerprint_path}")
