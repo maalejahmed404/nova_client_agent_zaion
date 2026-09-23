@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import uuid
 from typing import Annotated, Any, Literal, TypedDict
 
@@ -31,6 +32,9 @@ def _get_index() -> tuple[list, Any]:
 
 
 MAX_TOOL_CALLS = 8
+
+CUSTOMER_NUMBER_RE = re.compile(r"\bNEO[ -]?(\d{5})\b", re.IGNORECASE)
+PHONE_RE = re.compile(r"(?<!\d)0\d([ .-]?\d{2}){4}(?!\d)")
 
 
 class State(TypedDict):
@@ -107,10 +111,31 @@ def precheck(state: State) -> dict[str, Any]:
     if last_message.type != "human":
         return {"next": "agent"}
 
+    facts = state.get("facts", {})
+    identity_updates: dict[str, Any] = {}
+    customer_number_match = CUSTOMER_NUMBER_RE.search(last_message.content)
+    phone_match = PHONE_RE.search(last_message.content)
+    if customer_number_match and phone_match:
+        customer_number = "NEO-" + customer_number_match.group(1)
+        phone = re.sub(r"\D", "", phone_match.group(0))
+        if customer_number != state.get("customer_id"):
+            try:
+                customer = _api_client.verify(customer_number, phone)
+                facts = dict(state.get("facts", {}))
+                if state.get("customer_id") and state.get("customer_id") != customer["customer_id"]:
+                    facts = {}
+                    identity_updates["proposal"] = None
+                    identity_updates["passages"] = []
+                facts["dossier"] = customer
+                identity_updates["customer_id"] = customer["customer_id"]
+                identity_updates["facts"] = facts
+            except (APIError, APIUnavailable):
+                pass
+
     blocks = [
         ("message_client", last_message.content),
         ("contexte", [m.content for m in state["messages"][:-1] if m.type == "human"]),
-        ("faits", state.get("facts", {})),
+        ("faits", facts),
     ]
     sys_msg, human_msg = prompts.build_messages("precheck", blocks)
 
@@ -122,14 +147,14 @@ def precheck(state: State) -> dict[str, Any]:
         )
     except (openai.APIError, httpx.HTTPError) as e:
         logger.warning(f"precheck failed: {e}")
-        return {"next": "agent"}
+        return {"next": "agent", **identity_updates}
 
     valid = False
     if result.matched_items and result.evidence:
         evidence = result.evidence.lower()
         if (
             evidence in last_message.content.lower()
-            or evidence in str(state.get("facts", {})).lower()
+            or evidence in str(facts).lower()
         ):
             valid = True
         else:
@@ -142,9 +167,9 @@ def precheck(state: State) -> dict[str, Any]:
         already = state.get("matched_items") or []
         new_items = [m for m in result.matched_items if m not in already]
         if new_items:
-            return {"next": "escalade", "matched_items": already + new_items}
-        return {"next": "escalade", "escalated": True}
-    return {"next": "agent"}
+            return {"next": "escalade", "matched_items": already + new_items, **identity_updates}
+        return {"next": "escalade", "escalated": True, **identity_updates}
+    return {"next": "agent", **identity_updates}
 
 
 def agent(state: State) -> dict[str, Any]:
@@ -343,6 +368,7 @@ def outils(state: State) -> dict[str, Any]:
                         proposal = None
                         passages = []
 
+                    facts["dossier"] = customer
                     customer_id = customer["customer_id"]
                     result_content = "Identité vérifiée avec succès."
 
