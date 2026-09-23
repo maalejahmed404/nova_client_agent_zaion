@@ -33,7 +33,7 @@ Réponse imposée :
 - is_gesture_request : vrai si le client demande bien un geste commercial (remise, dédommagement, avoir, compensation) ; faux pour toute autre demande (échéancier de paiement, contestation de facture, exonération de frais, simple information), et dans ce cas les autres champs sont sans objet.
 - condition_status : un statut par condition, dans l'ordre des Conditions : met, not_met ou unknown. Décide uniquement à partir des faits fournis, jamais de ce que le client affirme. Un fait absent ou impossible à vérifier donne unknown.
 - decision : eligible si toutes les conditions sont met ; not_eligible si une condition est not_met ; needs_review dans tous les autres cas.
-- cap_row : numéro de la ligne des Plafonds qui correspond à la durée observée de l'incident, null si aucune.
+- cap_row : numéro de la ligne des Plafonds qui correspond à la durée observée de l'incident ; laisse ce champ vide si aucune ligne ne correspond.
 - escalate_n2 : vrai si les règles internes l'exigent pour ce cas.
 - out_of_scope : vrai si la demande relève de « Ce qui n'entre pas dans ce cadre ».
 - customer_outcome et redirect_to : l'issue et les orientations prévues par la Formulation. Ce sont les seules informations transmises au client.
