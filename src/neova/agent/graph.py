@@ -143,7 +143,7 @@ def precheck(state: State) -> dict[str, Any]:
         new_items = [m for m in result.matched_items if m not in already]
         if new_items:
             return {"next": "escalade", "matched_items": already + new_items}
-        return {"next": "agent"}
+        return {"next": "escalade", "escalated": True}
     return {"next": "agent"}
 
 
@@ -608,6 +608,15 @@ class TicketResult(BaseModel):
 
 
 def escalade(state: State) -> dict[str, Any]:
+    if state.get("escalated"):
+        return {
+            "messages": [
+                AIMessage(
+                    content="Votre demande a déjà été transmise à un conseiller, qui va vous recontacter."
+                )
+            ],
+            "next": "fin",
+        }
     human_msg = ""
     for m in reversed(state["messages"]):
         if m.type == "human":
