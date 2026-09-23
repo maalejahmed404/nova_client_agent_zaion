@@ -14,7 +14,7 @@ LOGS_DIR = PROJECT_ROOT / "logs"
 
 # Assumption, not in the escalation procedure: it gives the delays, not the opening hours.
 BUSINESS_HOURS = (9, 18)
-BUSINESS_DAYS = range(0, 5)
+BUSINESS_DAYS = range(5)
 
 
 class Settings(BaseSettings):
