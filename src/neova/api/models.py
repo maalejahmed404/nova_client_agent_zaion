@@ -153,6 +153,12 @@ class ProposalRequest(BaseModel):
             raise ValueError(f"Reason must be one of {allowed}")
         return v
 
+    @field_validator("override_reason")
+    def validate_override_reason(cls, v):
+        if v is not None and v not in ["pto_damaged", "equipment_damaged"]:
+            raise ValueError("override_reason must be one of: pto_damaged, equipment_damaged")
+        return v
+
 
 class ProposalResponse(BaseModel):
     proposal_id: str

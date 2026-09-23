@@ -1,12 +1,25 @@
 import random
+import secrets
+from datetime import timedelta
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
-from neova.api.models import Customer, Incident, VerifyRequest, VerifyResponse
-from neova.api.store import Store
-from neova.config import get_settings
+from neova.api.models import (
+    Appointment,
+    BookingRequest,
+    Customer,
+    Incident,
+    ProposalRequest,
+    ProposalResponse,
+    Ticket,
+    TicketRequest,
+    VerifyRequest,
+    VerifyResponse,
+)
+from neova.api.store import Store, body_hash, proposal_id
+from neova.config import BUSINESS_DAYS, BUSINESS_HOURS, get_settings, now
 
 store = Store()
 failure_rate = get_settings().api_chaos_rate
@@ -39,6 +52,12 @@ def session_customer(x_session: Annotated[str | None, Header()] = None) -> str:
             detail="Session inconnue.",
         )
     return customer_id
+
+
+def optional_session_customer(x_session: Annotated[str | None, Header()] = None) -> str | None:
+    if x_session is None:
+        return None
+    return store.session_customer(x_session)
 
 
 @app.post("/customers/verify", response_model=VerifyResponse)
@@ -91,6 +110,165 @@ def set_chaos_rate(rate: float):
 def reset_store():
     store.reset()
     return {"status": "reset"}
+
+
+@app.post("/appointments/proposals", response_model=ProposalResponse)
+def create_proposal(
+    request: ProposalRequest,
+    customer_id: Annotated[str, Depends(session_customer)],
+):
+    customer = store.get_customer(customer_id)
+    if customer is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Client introuvable.",
+        )
+    if customer.is_pro:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Les contrats Pro sont gérés par un autre service.",
+        )
+    if not customer.is_fibre:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Un rendez-vous technique ne s'applique qu'à la fibre.",
+        )
+    if store.appointment_for(customer_id) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Le client a déjà un rendez-vous.",
+        )
+    slots = store.slots_for(customer.postal_code)
+    slots = [slot for slot in slots if not slot.is_past]
+    if not slots:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Aucun créneau disponible dans ce code postal.",
+        )
+    incidents = store.incidents_for(customer.postal_code)
+    if any(incident.phase == "active" for incident in incidents) and request.override_reason is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Aucun technicien ne peut être envoyé tant qu'un incident réseau est en cours.",
+        )
+    if request.another_slot:
+        if len(slots) < 2:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Pas d'autre créneau disponible.",
+            )
+        slot = slots[1]
+    else:
+        slot = slots[0]
+    prop_id = proposal_id(customer_id, slot.slot_id, request.reason, request.override_reason)
+    store.save_proposal(
+        prop_id,
+        {
+            "customer_id": customer_id,
+            "slot_id": slot.slot_id,
+            "start": slot.start,
+            "end": slot.end,
+            "reason": request.reason,
+            "override_reason": request.override_reason,
+        },
+    )
+    return ProposalResponse(
+        proposal_id=prop_id,
+        slot_id=slot.slot_id,
+        start=slot.start,
+        end=slot.end,
+    )
+
+
+@app.post("/appointments")
+def book_appointment(
+    request: BookingRequest,
+    customer_id: Annotated[str, Depends(session_customer)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+):
+    if idempotency_key is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="L'en-tête Idempotency-Key est obligatoire.",
+        )
+    body = request.model_dump()
+    hash = body_hash(body)
+    remembered = store.recall_key(idempotency_key)
+    if remembered is not None:
+        stored_hash, stored_answer = remembered
+        if stored_hash == hash:
+            return stored_answer
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="La clé d'idempotence a déjà été utilisée avec un autre corps.",
+            )
+    proposal = store.take_proposal(request.proposal_id)
+    if proposal is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="L'offre proposée a été modifiée.",
+        )
+    appointment_id = secrets.token_urlsafe(16)
+    appointment = Appointment(
+        appointment_id=appointment_id,
+        customer_id=customer_id,
+        slot_id=proposal["slot_id"],
+        reason=proposal["reason"],
+        start=proposal["start"],
+        end=proposal["end"],
+        created_at=now(),
+    )
+    store.add_appointment(appointment)
+    answer = appointment.model_dump(mode="json")
+    store.remember_key(idempotency_key, hash, answer)
+    return answer
+
+
+@app.delete("/appointments/{appointment_id}")
+def delete_appointment(
+    appointment_id: str,
+    customer_id: Annotated[str, Depends(session_customer)],
+):
+    appointment = store.appointments.get(appointment_id)
+    if appointment is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Rendez-vous introuvable.",
+        )
+    if appointment.customer_id != customer_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Ce rendez-vous ne vous appartient pas.",
+        )
+    store.remove_appointment(appointment_id)
+    return {"deleted": appointment_id}
+
+
+@app.post("/tickets", response_model=Ticket)
+def create_ticket(
+    request: TicketRequest,
+    customer_id: Annotated[str | None, Depends(optional_session_customer)] = None,
+):
+    current = now()
+    if current.weekday() in BUSINESS_DAYS and BUSINESS_HOURS[0] <= current.hour < BUSINESS_HOURS[1]:
+        callback = current + timedelta(minutes=45)
+    else:
+        tomorrow = current + timedelta(days=1)
+        while tomorrow.weekday() not in BUSINESS_DAYS:
+            tomorrow += timedelta(days=1)
+        callback = tomorrow.replace(hour=BUSINESS_HOURS[0], minute=0, second=0, microsecond=0)
+    ticket_id = secrets.token_urlsafe(16)
+    ticket = Ticket(
+        ticket_id=ticket_id,
+        category=request.category,
+        summary=request.summary,
+        customer_id=customer_id,
+        created_at=current,
+        callback_eta=callback.isoformat(),
+    )
+    store.add_ticket(ticket)
+    return ticket
 
 
 @app.get("/health")
