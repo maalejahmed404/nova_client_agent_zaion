@@ -32,9 +32,13 @@ This machine is Windows: PowerShell syntax, always through `uv run`.
   raises, it never falls back on the previous value.
 - Any node that routes to outils sets after_tools at the same time, naming the node outils
   must return to.
-- When outils runs for postreview, it executes only chercher_documentation for a document
-  need and dossier_client for a fact need, never a write tool, and it appends a synthetic
-  assistant tool call before the tool message so the history stays valid for the provider.
+- outils runs for postreview when the state key needs is set, not because of after_tools:
+  the mode comes from needs, the destination always from after_tools. A document need
+  returns to agent, because the answer was written without that document and has to be
+  rewritten; a fact need returns to postreview, which only needed it to judge.
+- In that mode it runs only chercher_documentation for a document need and dossier_client
+  for a fact need, never a write tool, and it appends a synthetic assistant tool call
+  before the tool message so the history stays valid for the provider.
 - precheck is a structured call over precheck.txt: it decides only whether the request must
   be transferred before any treatment.
 - agent is the ReAct loop: the chat model with the seven tools bound. Tool bodies are empty;
