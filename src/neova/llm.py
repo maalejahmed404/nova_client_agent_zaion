@@ -127,15 +127,24 @@ def embed_texts(
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     files = {
-        text: cache_dir / f"{hashlib.sha256(f'{model}:{query_instruction or ''}:{text}'.encode()).hexdigest()}.json"
+        text: cache_dir
+        / f"{hashlib.sha256(f'{model}:{query_instruction or ""}:{text}'.encode()).hexdigest()}.json"
         for text in dict.fromkeys(texts)
     }
-    vectors = {t: json.loads(f.read_text(encoding="utf-8"))["embedding"] for t, f in files.items() if f.exists()}
+    vectors = {
+        t: json.loads(f.read_text(encoding="utf-8"))["embedding"]
+        for t, f in files.items()
+        if f.exists()
+    }
     missing = [t for t in files if t not in vectors]
 
     for start in range(0, len(missing), batch_size):
-        batch = missing[start:start + batch_size]
-        inputs = [f"{query_instruction} {t}" for t in batch] if query_instruction else batch
+        batch = missing[start : start + batch_size]
+        inputs = (
+            [f"Instruct: {query_instruction}\nQuery: {t}" for t in batch]
+            if query_instruction
+            else batch
+        )
         data = retry_policy()(_post, "embeddings", {"model": model, "input": inputs})
         items = sorted(data["data"], key=lambda item: item["index"])
         if len(items) != len(batch):
@@ -143,13 +152,17 @@ def embed_texts(
         for text, item in zip(batch, items):
             vectors[text] = item["embedding"]
             tmp = files[text].with_suffix(".tmp")
-            tmp.write_text(json.dumps({"text": text, "embedding": item["embedding"]}), encoding="utf-8")
+            tmp.write_text(
+                json.dumps({"text": text, "embedding": item["embedding"]}), encoding="utf-8"
+            )
             tmp.replace(files[text])
 
     return [vectors[t] for t in texts]
 
 
-def image_to_markdown(image_path: str | Path, model: str | None = None, offline: bool = False) -> str:
+def image_to_markdown(
+    image_path: str | Path, model: str | None = None, offline: bool = False
+) -> str:
     """Transcription markdown fidèle. Cache indexé sur le contenu de l'image, le modèle et le prompt."""
     path = Path(image_path)
     if not path.is_absolute():
@@ -169,10 +182,18 @@ def image_to_markdown(image_path: str | Path, model: str | None = None, offline:
         "model": model,
         "temperature": 0,
         "max_tokens": get_settings().max_tokens,
-        "messages": [{"role": "user", "content": [
-            {"type": "text", "text": OCR_PROMPT},
-            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64encode(image).decode()}"}},
-        ]}],
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": OCR_PROMPT},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime};base64,{b64encode(image).decode()}"},
+                    },
+                ],
+            }
+        ],
     }
     choice = retry_policy()(_post, "chat/completions", payload, 180.0)["choices"][0]
     if choice.get("finish_reason") == "length":
@@ -196,7 +217,12 @@ class CostLoggerCallback(BaseCallbackHandler):
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
     def on_chat_model_start(
-        self, serialized: dict[str, Any], messages: list[list[BaseMessage]], *, run_id: UUID, **kwargs: Any
+        self,
+        serialized: dict[str, Any],
+        messages: list[list[BaseMessage]],
+        *,
+        run_id: UUID,
+        **kwargs: Any,
     ) -> None:
         self.starts[run_id] = time.perf_counter()
 

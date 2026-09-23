@@ -25,8 +25,8 @@
 {"id": "r25", "q": "Est-ce que je peux payer ma dette en plusieurs fois ?", "expected": ["faq-facturation#echelonnement"]}
 {"id": "r26", "q": "Qu'est-ce qui se passe si je ne paie pas ma facture ?", "expected": ["faq-facturation#defaut-de-paiement"]}
 {"id": "r27", "q": "À quelle date ma facture est-elle prélevée ?", "expected": ["faq-facturation#rythme-de-facturation"]}
-{"id": "r28", "q": "Comment je change mes coordonnées bancaires ?", "expected": ["faq-espace-client#modification-de-l-iban"]}
-{"id": "r29", "q": "J'ai oublié le mot de passe de mon espace client", "expected": ["faq-espace-client#mot-de-passe-oublie"]}
+{"id": "r28", "q": "Comment je change mes coordonnées bancaires ?", "expected": ["faq-espace-client#espace-client-modification-de-l-iban"]}
+{"id": "r29", "q": "J'ai oublié le mot de passe de mon espace client", "expected": ["faq-espace-client#espace-client-se-connecter-mot-de-passe-oublie"]}
 {"id": "r30", "q": "Combien coûte un déménagement si le nouveau logement est déjà raccordé ?", "expected": ["procedure-demenagement#frais"]}
 {"id": "r31", "q": "Combien de temps à l'avance dois-je prévenir pour mon déménagement ?", "expected": ["procedure-demenagement#delai"]}
 {"id": "r32", "q": "Quel était le prix de la fibre 500 pendant l'offre Rentrée 2024 ?", "historical": true, "expected": ["promo-rentree-2024#tarifs-promotionnels"]}
