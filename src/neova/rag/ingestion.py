@@ -1,14 +1,14 @@
 import hashlib
+import json
 import re
 import sys
-import json
 from pathlib import Path
 
 import pymupdf
 
-from neova.config import CORPUS_DIR, CACHE_DIR, PROJECT_ROOT
+from neova.config import CACHE_DIR, CORPUS_DIR, PROJECT_ROOT
 
-from .models import Document, Element, Line, Table, Chunk
+from .models import Chunk, Document, Element, Line, Table
 
 HEADER_FILL = (0.06, 0.46, 0.43)
 
@@ -655,7 +655,9 @@ def parse_markdown(path: Path, offline: bool = False) -> Document:
         nonlocal current_list_items, current_list_marker
         if current_list_items:
             for item in current_list_items:
-                elements.append(Element("item", item, marker=current_list_marker, pages={table_page}))
+                elements.append(
+                    Element("item", item, marker=current_list_marker, pages={table_page})
+                )
             current_list_items.clear()
             current_list_marker = None
 
@@ -686,7 +688,9 @@ def parse_markdown(path: Path, offline: bool = False) -> Document:
                     if j == 0:
                         cells = [cell.strip() for cell in tbl_line.strip("|").split("|")]
                         headers = cells
-                    elif j == 1 and all(c in "-:" for c in tbl_line.replace("|", "").replace(" ", "")):
+                    elif j == 1 and all(
+                        c in "-:" for c in tbl_line.replace("|", "").replace(" ", "")
+                    ):
                         continue
                     else:
                         cells = [cell.strip() for cell in tbl_line.strip("|").split("|")]
@@ -719,7 +723,7 @@ def parse_markdown(path: Path, offline: bool = False) -> Document:
                     marker = prefix.rstrip()
                     if marker == "1.":
                         marker = "1"
-                    item_text = stripped[len(prefix):].strip()
+                    item_text = stripped[len(prefix) :].strip()
                     if current_list_marker != marker:
                         flush_list()
                         current_list_marker = marker
@@ -789,14 +793,17 @@ def banner(doc: Document) -> str:
         return f"EN VIGUEUR depuis le {doc.effective_from}."
     return ""
 
+
 def _slug(text: str) -> str:
     import unicodedata
-    text = unicodedata.normalize('NFKD', text)
-    text = ''.join(c for c in text if not unicodedata.combining(c))
+
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(c for c in text if not unicodedata.combining(c))
     text = text.lower()
-    text = re.sub(r'[^a-z0-9]+', '-', text)
-    text = text.strip('-')
+    text = re.sub(r"[^a-z0-9]+", "-", text)
+    text = text.strip("-")
     return text
+
 
 def chunk_document(doc: Document) -> list[Chunk]:
     chunks = []
@@ -805,12 +812,16 @@ def chunk_document(doc: Document) -> list[Chunk]:
     section_elements: list[Element] = []
     section_tables: list[Table] = []
     section_pages: set[int] = set()
-    
+
     def flush_section():
         nonlocal current_section_title_parts, section_elements, section_tables, section_pages
         if not section_elements:
             return
-        section_title = doc.title if not current_section_title_parts else " > ".join(current_section_title_parts)
+        section_title = (
+            doc.title
+            if not current_section_title_parts
+            else " > ".join(current_section_title_parts)
+        )
         text_parts = []
         text_parts.append("# description")
         text_parts.append(doc.title)
@@ -820,14 +831,14 @@ def chunk_document(doc: Document) -> list[Chunk]:
         if doc.preamble.strip():
             text_parts.append(doc.preamble)
         text_parts.append("")
-        
+
         if doc.doc_id.startswith("faq-"):
             text_parts.append("# demande de")
         else:
             text_parts.append("# section")
         text_parts.append(section_title)
         text_parts.append("")
-        
+
         text_parts.append("# texte")
         for elem in section_elements:
             if elem.kind == "paragraph":
@@ -837,31 +848,33 @@ def chunk_document(doc: Document) -> list[Chunk]:
             elif elem.kind == "table" and elem.table:
                 text_parts.append(render_table(elem.table))
             text_parts.append("")
-        
+
         text = "\n".join(text_parts).strip()
         slug = "preambule" if not current_section_title_parts else _slug(section_title)
         chunk_id = f"{doc.doc_id}#{slug}"
-        
-        chunks.append(Chunk(
-            chunk_id=chunk_id,
-            doc_id=doc.doc_id,
-            title=doc.title,
-            heading=section_title,
-            text=text,
-            search_text=text,
-            tables=section_tables.copy(),
-            pages=sorted(section_pages),
-            audience=doc.audience,
-            statut=doc.statut,
-            updated=doc.updated,
-            effective_from=doc.effective_from,
-            offer_window=doc.offer_window,
-            supersedes=doc.supersedes
-        ))
+
+        chunks.append(
+            Chunk(
+                chunk_id=chunk_id,
+                doc_id=doc.doc_id,
+                title=doc.title,
+                heading=section_title,
+                text=text,
+                search_text=text,
+                tables=section_tables.copy(),
+                pages=sorted(section_pages),
+                audience=doc.audience,
+                statut=doc.statut,
+                updated=doc.updated,
+                effective_from=doc.effective_from,
+                offer_window=doc.offer_window,
+                supersedes=doc.supersedes,
+            )
+        )
         section_elements.clear()
         section_tables.clear()
         section_pages.clear()
-    
+
     current_section_title_parts = []
     for elem in doc.elements:
         if elem.kind == "heading":
@@ -869,45 +882,48 @@ def chunk_document(doc: Document) -> list[Chunk]:
             if elem.level == shallowest:
                 current_section_title_parts = [elem.text]
             else:
-                current_section_title_parts = current_section_title_parts[:elem.level - shallowest] + [elem.text]
+                current_section_title_parts = current_section_title_parts[
+                    : elem.level - shallowest
+                ] + [elem.text]
         else:
             section_elements.append(elem)
             if elem.pages:
                 section_pages.update(elem.pages)
             if elem.kind == "table" and elem.table:
                 section_tables.append(elem.table)
-    
+
     flush_section()
     return chunks
+
 
 def render_table(table: Table) -> str:
     if not table.headers:
         return ""
-    
+
     header_row = "| " + " | ".join(table.headers) + " |"
     separator = "|-" + "-|-".join("-" * len(h) for h in table.headers) + "-|"
-    
+
     rows = []
     for row in table.rows:
         row_cells = [cell if cell is not None else "" for cell in row]
         rows.append("| " + " | ".join(row_cells) + " |")
-    
+
     return "\n".join([header_row, separator] + rows)
 
 
 def _compute_fingerprint(pdf_files: list[Path], png_files: list[Path]) -> str:
     source_files: list[tuple[str, str]] = []
-    
+
     for file_path in pdf_files:
         with open(file_path, "rb") as f:
             file_hash = hashlib.sha256(f.read()).hexdigest()
         source_files.append((str(file_path.relative_to(PROJECT_ROOT)), file_hash))
-    
+
     for file_path in png_files:
         with open(file_path, "rb") as f:
             file_hash = hashlib.sha256(f.read()).hexdigest()
         source_files.append((str(file_path.relative_to(PROJECT_ROOT)), file_hash))
-    
+
     source_files.sort(key=lambda x: x[0])
     fingerprint_data = "\n".join(f"{name}:{hash}" for name, hash in source_files)
     return hashlib.sha256(fingerprint_data.encode()).hexdigest()
@@ -915,61 +931,61 @@ def _compute_fingerprint(pdf_files: list[Path], png_files: list[Path]) -> str:
 
 def build_corpus(offline: bool = False) -> list[Chunk]:
     all_chunks: list[Chunk] = []
-    
+
     corpus_dir = CORPUS_DIR
     if not corpus_dir.exists():
         return []
-    
+
     pdf_files = sorted(corpus_dir.glob("*.pdf"))
     png_files = sorted(corpus_dir.glob("*.png"))
-    
+
     for file_path in pdf_files:
         doc = parse_pdf(file_path)
         if doc.audience != "public":
             continue
         chunks = chunk_document(doc)
         all_chunks.extend(chunks)
-    
+
     for file_path in png_files:
         doc = parse_markdown(file_path, offline=offline)
         if doc.audience != "public":
             continue
         chunks = chunk_document(doc)
         all_chunks.extend(chunks)
-    
+
     corpus_cache_dir = CACHE_DIR / "corpus"
     corpus_cache_dir.mkdir(parents=True, exist_ok=True)
-    
+
     corpus_json_path = corpus_cache_dir / "corpus.json"
     with open(corpus_json_path, "w", encoding="utf-8") as f:
         json.dump([chunk.to_dict() for chunk in all_chunks], f, ensure_ascii=False, indent=2)
-    
+
     fingerprint_hash = _compute_fingerprint(pdf_files, png_files)
     fingerprint_path = corpus_cache_dir / "fingerprint.txt"
     with open(fingerprint_path, "w", encoding="utf-8") as f:
         f.write(fingerprint_hash)
-    
+
     return all_chunks
 
 
 if __name__ == "__main__":
     import argparse
-    
+
     parser = argparse.ArgumentParser()
     parser.add_argument("file", nargs="?", help="Single file to debug")
     parser.add_argument("--offline", action="store_true", help="Run build_corpus offline")
     args = parser.parse_args()
-    
+
     if args.file:
         file_path = CORPUS_DIR / args.file
         if not file_path.exists():
             print(f"Fichier introuvable dans corpus/ : {args.file}")
             sys.exit(1)
-        
+
         if file_path.suffix.lower() == ".pdf":
             lines, drawings, _ = layout(file_path)
             tables = find_tables(lines, drawings)
-            
+
             if not tables:
                 print("No tables found.")
             else:
@@ -980,17 +996,17 @@ if __name__ == "__main__":
                     print("Rows:")
                     for row in table.rows:
                         print("  ", row)
-            
+
             tables_line_ids = set()
             for table in tables:
                 tables_line_ids.update(table.line_ids)
-            
+
             body_size, heading_levels = heading_levels(lines, tables_line_ids)
             print(f"\nBody size: {body_size}")
             print("Heading levels:")
             for size, level in sorted(heading_levels.items(), key=lambda x: x[0], reverse=True):
                 print(f"  {size} -> H{level}")
-            
+
             print("\nHeading lines:")
             for idx, line in enumerate(lines):
                 if idx in tables_line_ids:
@@ -998,7 +1014,7 @@ if __name__ == "__main__":
                 if line.size in heading_levels:
                     level = heading_levels[line.size]
                     print(f"  H{level}: {line.text}")
-            
+
             print("\n=== parse_pdf ===")
             doc = parse_pdf(file_path)
             print(f"Title: {doc.title}")
@@ -1031,20 +1047,20 @@ if __name__ == "__main__":
                 print(f"  {preview}")
     else:
         chunks = build_corpus(offline=args.offline)
-        
+
         corpus_cache_dir = CACHE_DIR / "corpus"
         corpus_json_path = corpus_cache_dir / "corpus.json"
         fingerprint_path = corpus_cache_dir / "fingerprint.txt"
-        
+
         pdf_count = len(list(CORPUS_DIR.glob("*.pdf")))
         png_count = len(list(CORPUS_DIR.glob("*.png")))
         total_docs = pdf_count + png_count
-        
+
         docs_with_chunks = len({chunk.doc_id for chunk in chunks})
         internal_count = total_docs - docs_with_chunks
         chunk_count = len(chunks)
         table_count = sum(len(chunk.tables) for chunk in chunks)
-        
+
         print(f"Documents lus : {total_docs}")
         print(f"Documents internes ignorés : {internal_count}")
         print(f"Fragments générés : {chunk_count}")
