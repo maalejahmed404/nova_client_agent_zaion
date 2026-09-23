@@ -8,6 +8,9 @@ human advisor.
 
 Requires `OPENROUTER_API_KEY` in `.env` (copy `.env.example`).
 
+$\color{orange}\textsf{To test another customer, restart the agent rather than switching in the same chat:}$\
+$\color{orange}\textsf{one HTTP client, and its API session, is shared by every conversation.}$
+
 ```bash
 uv run neova chat
 ```
@@ -90,7 +93,8 @@ pipeline. Retrieval has a single correct answer per question and lends itself to
 agent's quality lies in whole exchanges (which tool it calls, when it transfers, what it tells the
 customer), which I found more reliable to judge by reading them. Testing concentrated on the flows
 that carry risk: network failures, technician booking, billing, immediate and reviewed transfers,
-and contradictory documents. The representative scenarios below all pass; run each in a new chat,
+and contradictory documents. The representative scenarios below pass, except the booking one, which can end in a transfer
+(see "What's broken"); run each in a new chat,
 typing a customer's full name to identify:
 
 | Customer | Message(s) | Expected |
@@ -152,7 +156,12 @@ obsolete document without a status header would not be filtered.
   tuned enough yet.
 - postreview checks that claims have a source, not that they are correct, and lets any question
   to the customer through.
-- The rewrite path leaves the rejected draft in the history.
+- **The rewrite path is unreliable.** When `postreview` finds a claim without a source, the
+  document it fetches goes back to `agent`, which is expected to rewrite its reply; but the rejected
+  draft stays in the history, so the model sometimes believes it has already answered and returns
+  nothing, and the turn ends in a transfer. This breaks the technician booking when the agent states
+  the 69 € condition before searching the documentation. The intended fix is to send a fetched
+  document back to `postreview`, which only needs it to judge.
 - Not production-grade: one HTTP client and one API session shared by every conversation (safe
   with one chat per process, not with concurrent ones), in-memory state only, and the design leans
   on the state to remember what was done rather than on persisted records.
@@ -171,6 +180,7 @@ obsolete document without a status header would not be filtered.
 3. An automated end-to-end evaluation with a pass rate and error analysis, traced in Langfuse.
 4. Production practices as a priority: one API session per conversation, a persistent
    checkpointer, session expiry, persisted records of actions.
-5. A correctness check in postreview, and a rewrite path that drops the rejected draft.
+5. Keep `postreview` a pure judge: a document it fetches comes back to it rather than to `agent`,
+   and a separate correctness check decides whether a reply needs rewriting.
 
 Spend: about $9.7 of the $10, coding assistant included.
