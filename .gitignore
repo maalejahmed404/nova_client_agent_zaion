@@ -18,7 +18,6 @@ venv/
 # local notes
 take_home_relation_client.md
 
-corpus_manifest.yaml
 # local artefacts
 .cache/
 logs/
