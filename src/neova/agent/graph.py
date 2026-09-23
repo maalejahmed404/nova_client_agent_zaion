@@ -71,17 +71,20 @@ def chercher_documentation(question: str, historical: bool = False) -> None:
 @tool
 def verifier_identite(customer_id: str, phone: str) -> None:
     """Vérifie le client avec son numéro de client et le numéro de téléphone du contrat,
-    tels qu'il les a fournis. Ouvre l'accès à son dossier."""
+    tels qu'il les a fournis. Ouvre l'accès à son dossier. Inutile si le dossier de ce client
+    figure déjà dans les faits."""
 
 
 @tool
 def dossier_client() -> None:
-    """Le dossier du client identifié. Nécessite une identité vérifiée."""
+    """Le dossier du client identifié : offre, prix, ancienneté, engagement, solde, factures,
+    équipements. Nécessite une identité vérifiée. Inutile s'il figure déjà dans les faits."""
 
 
 @tool
 def incidents_zone() -> None:
-    """Les incidents réseau dans la zone du client identifié."""
+    """Les incidents réseau dans la zone du client identifié. À consulter dès que le client
+    signale une panne, une coupure ou une lenteur, avant tout diagnostic."""
 
 
 @tool
@@ -114,7 +117,8 @@ def confirmer_rendez_vous() -> None:
 @tool
 def verifier_geste_commercial() -> None:
     """Décide si un geste commercial peut être accordé au client identifié,
-    et retourne le résultat pour le lui communiquer."""
+    et retourne le résultat pour le lui communiquer. À appeler dès que le client demande une
+    remise, un dédommagement, un avoir ou une compensation."""
 
 
 class PrecheckResult(BaseModel):
@@ -407,13 +411,19 @@ def outils(state: State) -> dict[str, Any]:
                 if "dossier" not in facts:
                     facts["dossier"] = _api_client.get_customer()
 
+                case = args.get("case")
                 incidents_en_cours = []
-                if "fibre" not in facts["dossier"]["plan"].lower():
+                if case not in CASE_REASONS:
+                    result_content = (
+                        "Cas non reconnu : indiquez l'un des cas documentés "
+                        f"({', '.join(CASE_REASONS)})."
+                    )
+                elif "fibre" not in facts["dossier"]["plan"].lower():
                     result_content = (
                         "Aucun rendez-vous ne peut être proposé : l'intervention d'un "
                         "technicien ne concerne que les offres fibre."
                     )
-                elif args["case"] in ("voyant_rouge_persistant", "coupures_repetees"):
+                elif case in ("voyant_rouge_persistant", "coupures_repetees"):
                     facts["incidents"] = _api_client.get_incidents()
                     incidents_en_cours = [i for i in facts["incidents"] if i["phase"] != "planned"]
 
@@ -425,7 +435,7 @@ def outils(state: State) -> dict[str, Any]:
                     )
                 elif not result_content:
                     data = _api_client.propose(
-                        reason=CASE_REASONS[args["case"]],
+                        reason=CASE_REASONS[case],
                         another_slot=args.get("another_slot", False),
                     )
                     key = str(uuid.uuid4())
@@ -605,15 +615,22 @@ def postreview(state: State) -> dict[str, Any]:
             last_ai_msg = m.content
             break
 
+    last_human = max(i for i, m in enumerate(state["messages"]) if m.type == "human")
     docs = []
+    tool_results = []
+    searched_this_turn = False
     call_names = {}
-    for m in state["messages"]:
-        if m.type == "ai" and hasattr(m, "tool_calls") and m.tool_calls:
+    for i, m in enumerate(state["messages"]):
+        if m.type == "ai" and m.tool_calls:
             for tc in m.tool_calls:
                 call_names[tc["id"]] = tc["name"]
-        elif m.type == "tool":
-            if call_names.get(m.tool_call_id) == "chercher_documentation" and m.content:
+        elif m.type == "tool" and m.content:
+            name = call_names.get(m.tool_call_id)
+            if name == "chercher_documentation":
                 docs.append(m.content)
+                searched_this_turn = searched_this_turn or i > last_human
+            elif i > last_human:
+                tool_results.append(f"{name} : {m.content}")
 
     context = []
     for m in state["messages"][-7:-1]:
@@ -627,6 +644,7 @@ def postreview(state: State) -> dict[str, Any]:
         ("reponse_proposee", last_ai_msg),
         ("faits", state.get("facts", {})),
         ("documents", docs),
+        ("resultats_outils", tool_results),
         ("actions", state.get("actions", [])),
     ]
 
@@ -650,6 +668,12 @@ def postreview(state: State) -> dict[str, Any]:
         return {"next": "outils", "needs": state_needs, "after_tools": after_tools}
 
     if not decision.documents_cover:
+        # outils skips a need once needs_done is set, so forcing a search then would loop.
+        # The customer's last message alone can be a bare "oui"; the proposed answer carries
+        # the claims that need a source.
+        if not searched_this_turn and not state.get("needs_done"):
+            query = f"{human_msg}\n{last_ai_msg}"
+            return {"next": "outils", "needs": {"document": query}, "after_tools": "agent"}
         return {"next": "escalade", "reason": decision.reason}
 
     for candidate in decision.candidates:
