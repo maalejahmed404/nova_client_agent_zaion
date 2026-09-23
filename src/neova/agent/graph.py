@@ -1,7 +1,7 @@
 import json
 import logging
 import uuid
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, Literal, TypedDict
 
 import httpx
 import openai
@@ -10,7 +10,7 @@ from langchain_core.tools import tool
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError, field_validator
 
 from neova import llm
 from neova.agent import prompts
@@ -42,9 +42,10 @@ class State(TypedDict):
     proposal: dict[str, Any] | None
     actions: list[str]
     tool_calls: int
-    identity_failures: int
     needs_done: bool
     needs: dict[str, Any] | None
+    matched_items: list[int] | None
+    reason: str | None
     escalated: bool
     next: str | None
     after_tools: str | None
@@ -74,7 +75,8 @@ def incidents_zone() -> None:
 
 @tool
 def proposer_rendez_vous(
-    reason: str, override_reason: str | None = None, another_slot: bool = False
+    reason: Literal["no_internet", "slow_internet", "installation", "equipment_swap"],
+    another_slot: bool = False,
 ) -> None:
     """Prépare un rendez-vous avec un technicien sans le réserver. Ne l'appeler qu'une fois que
     la documentation et le client ont établi qu'une visite est justifiée.
@@ -108,6 +110,7 @@ def precheck(state: State) -> dict[str, Any]:
     blocks = [
         ("message_client", last_message.content),
         ("contexte", [m.content for m in state["messages"][:-1] if m.type == "human"]),
+        ("faits", state.get("facts", {})),
     ]
     sys_msg, human_msg = prompts.build_messages("precheck", blocks)
 
@@ -124,7 +127,10 @@ def precheck(state: State) -> dict[str, Any]:
     valid = False
     if result.matched_items and result.evidence:
         evidence = result.evidence.lower()
-        if evidence in last_message.content.lower():
+        if (
+            evidence in last_message.content.lower()
+            or evidence in str(state.get("facts", {})).lower()
+        ):
             valid = True
         else:
             for m in state["messages"][:-1]:
@@ -133,9 +139,8 @@ def precheck(state: State) -> dict[str, Any]:
                     break
 
     if valid:
-        return {"next": "escalade"}
-    else:
-        return {"next": "agent"}
+        return {"next": "escalade", "matched_items": result.matched_items}
+    return {"next": "agent"}
 
 
 def agent(state: State) -> dict[str, Any]:
@@ -144,7 +149,8 @@ def agent(state: State) -> dict[str, Any]:
         ("faits", state.get("facts", {})),
         ("actions", state.get("actions", [])),
     ]
-    sys_msg, _ = prompts.build_messages("agent", blocks)
+    sys_msg, context = prompts.build_messages("agent", blocks)
+    sys_msg = f"{sys_msg}\n\n{context}"
 
     tools = [
         chercher_documentation,
@@ -193,12 +199,19 @@ class GesteCommercialResult(BaseModel):
     is_gesture_request: bool
     condition_status: list[str]
     decision: str
-    cap_row: int | None
+    cap_row: int | None = None
     escalate_n2: bool
     out_of_scope: bool
     customer_outcome: str
     redirect_to: str
     internal_note: str
+
+    @field_validator("cap_row", mode="before")
+    @classmethod
+    def _vide_vaut_rien(cls, v: Any) -> Any:
+        if isinstance(v, str) and v.strip().lower() in {"", "null", "none", "n/a", "aucun"}:
+            return None
+        return v
 
 
 def outils(state: State) -> dict[str, Any]:
@@ -212,9 +225,7 @@ def outils(state: State) -> dict[str, Any]:
     proposal = dict(state.get("proposal", {})) if state.get("proposal") else None
     passages = list(state.get("passages", []))
     customer_id = state.get("customer_id")
-    identity_failures = state.get("identity_failures", 0)
-    next_node = after_tools
-    new_after_tools = after_tools
+    destination = after_tools
 
     needs = state.get("needs") or {}
     if needs:
@@ -259,7 +270,7 @@ def outils(state: State) -> dict[str, Any]:
                 "needs_done": True,
                 "next": after_tools,
             }
-        elif "fact" in needs and needs["fact"] == "dossier":
+        elif "fact" in needs:
             call_id = str(uuid.uuid4())
             call = {"id": call_id, "name": "dossier_client", "args": {}, "type": "tool_call"}
             ai_msg = AIMessage(content="", tool_calls=[call])
@@ -282,14 +293,14 @@ def outils(state: State) -> dict[str, Any]:
                 "needs_done": True,
                 "next": after_tools,
             }
-        return {"next": after_tools, "needs": None}
+        return {"next": after_tools, "needs": None, "needs_done": True}
 
     last_message = state["messages"][-1]
 
     if hasattr(last_message, "tool_calls") and last_message.tool_calls:
         tool_calls_to_execute = last_message.tool_calls
     else:
-        return {"next": after_tools, "after_tools": new_after_tools}
+        return {"next": after_tools, "after_tools": after_tools}
 
     for call in tool_calls_to_execute:
         call_id = call["id"]
@@ -332,13 +343,7 @@ def outils(state: State) -> dict[str, Any]:
                     result_content = "Identité vérifiée avec succès."
 
                 except APIError as e:
-                    identity_failures += 1
-                    if identity_failures >= 2:
-                        result_content = "L'identité ne peut pas être vérifiée."
-                        next_node = "escalade"
-                        new_after_tools = None
-                    else:
-                        result_content = f"Erreur de vérification: {e.detail}"
+                    result_content = f"Erreur de vérification: {e.detail}"
 
             elif name == "dossier_client":
                 data = _api_client.get_customer()
@@ -353,7 +358,6 @@ def outils(state: State) -> dict[str, Any]:
             elif name == "proposer_rendez_vous":
                 data = _api_client.propose(
                     reason=args.get("reason", ""),
-                    override_reason=args.get("override_reason"),
                     another_slot=args.get("another_slot", False),
                 )
                 key = str(uuid.uuid4())
@@ -361,6 +365,9 @@ def outils(state: State) -> dict[str, Any]:
                     "offer": data,
                     "idempotency_key": key,
                     "proposal_id": data.get("proposal_id"),
+                    "customer_messages": len(
+                        [m for m in state["messages"] if m.type == "human"]
+                    ),
                 }
                 result_content = json.dumps(data, ensure_ascii=False)
 
@@ -368,6 +375,14 @@ def outils(state: State) -> dict[str, Any]:
                 if not proposal:
                     result_content = (
                         "Il faut d'abord proposer un créneau avant de pouvoir le confirmer."
+                    )
+                elif (
+                    len([m for m in state["messages"] if m.type == "human"])
+                    <= proposal["customer_messages"]
+                ):
+                    result_content = (
+                        "Le client n'a pas encore vu cette proposition. Présentez-lui le créneau et la "
+                        "condition tarifaire, puis attendez sa réponse."
                     )
                 else:
                     human_msg = None
@@ -387,13 +402,16 @@ def outils(state: State) -> dict[str, Any]:
 
                     sys_msg, text = prompts.build_messages("confirmation", blocks)
 
-                    decision = llm.structured_answer(
-                        messages=[SystemMessage(content=sys_msg), HumanMessage(content=text)],
-                        output_model=ConfirmationResult,
-                        temperature=0.0,
-                    )
+                    if not proposal.get("confirmed"):
+                        decision = llm.structured_answer(
+                            messages=[SystemMessage(content=sys_msg), HumanMessage(content=text)],
+                            output_model=ConfirmationResult,
+                            temperature=0.0,
+                        )
+                        if decision.confirmed:
+                            proposal = {**proposal, "confirmed": True}
 
-                    if not decision.confirmed:
+                    if not proposal.get("confirmed"):
                         result_content = "Le client n'a pas confirmé la proposition de rendez-vous."
                     else:
                         try:
@@ -409,7 +427,16 @@ def outils(state: State) -> dict[str, Any]:
                             result_content = f"Erreur lors de la réservation: {e.detail}"
 
             elif name == "verifier_geste_commercial":
-                blocks = [("faits", facts)]
+                if "dossier" not in facts:
+                    facts["dossier"] = _api_client.get_customer()
+                if "incidents" not in facts:
+                    facts["incidents"] = _api_client.get_incidents()
+                human_msg = ""
+                for m in reversed(state["messages"]):
+                    if m.type == "human":
+                        human_msg = m.content
+                        break
+                blocks = [("message_client", human_msg), ("faits", facts)]
                 sys_msg, text = prompts.build_messages("geste_commercial", blocks)
 
                 decision = llm.structured_answer(
@@ -423,6 +450,14 @@ def outils(state: State) -> dict[str, Any]:
                     f"Issue: {decision.customer_outcome}\nOrientation: {decision.redirect_to}"
                 )
 
+                if decision.is_gesture_request and (
+                    decision.escalate_n2
+                    or decision.out_of_scope
+                    or decision.decision == "needs_review"
+                ):
+                    destination = "escalade"
+                    reason = decision.internal_note
+
             else:
                 result_content = f"Outil inconnu: {name}"
 
@@ -432,32 +467,197 @@ def outils(state: State) -> dict[str, Any]:
             else:
                 result_content = "Le service est temporairement indisponible."
             logger.error(f"API Error in tool {name}: {e}")
+        except (ValidationError, ValueError) as e:
+            result_content = "Le traitement n'a pas abouti."
+            logger.error(f"Structured answer invalid in tool {name}: {e}")
 
         tool_messages.append(ToolMessage(content=result_content, tool_call_id=call_id))
 
-    return {
+    result = {
         "messages": tool_messages,
         "actions": actions,
         "facts": facts,
         "proposal": proposal,
         "passages": passages,
         "customer_id": customer_id,
-        "identity_failures": identity_failures,
-        "next": next_node,
-        "after_tools": new_after_tools,
+        "next": destination,
+        "after_tools": after_tools,
     }
+    if destination == "escalade":
+        result["reason"] = reason
+    return result
 
 
-def postreview(state: State) -> None:
-    pass
+class DocumentNeed(BaseModel):
+    kind: str
+    query: str
 
 
-def escalade(state: State) -> None:
-    pass
+class Condition(BaseModel):
+    condition: str
+    met: str
 
 
-def fin(state: State) -> None:
-    pass
+class CandidateSituation(BaseModel):
+    situation: str
+    established: bool
+    elements: list[str]
+
+
+class PostReviewResult(BaseModel):
+    candidates: list[CandidateSituation]
+    needs: list[DocumentNeed]
+    documents_cover: bool
+    advisor_conditions: list[Condition]
+    reason: str
+
+
+def postreview(state: State) -> dict[str, Any]:
+    human_msg = ""
+    for m in reversed(state["messages"]):
+        if m.type == "human":
+            human_msg = m.content
+            break
+
+    last_ai_msg = ""
+    for m in reversed(state["messages"]):
+        if m.type == "ai" and m.content:
+            last_ai_msg = m.content
+            break
+
+    docs = []
+    call_names = {}
+    for m in state["messages"]:
+        if m.type == "ai" and hasattr(m, "tool_calls") and m.tool_calls:
+            for tc in m.tool_calls:
+                call_names[tc["id"]] = tc["name"]
+        elif m.type == "tool":
+            if call_names.get(m.tool_call_id) == "chercher_documentation" and m.content:
+                docs.append(m.content)
+
+    context = []
+    for m in state["messages"][-7:-1]:
+        if m.type in ("human", "ai") and m.content:
+            role = "Client" if m.type == "human" else "Agent"
+            context.append(f"{role}: {m.content}")
+
+    blocks = [
+        ("message_client", human_msg),
+        ("contexte", context),
+        ("reponse_proposee", last_ai_msg),
+        ("faits", state.get("facts", {})),
+        ("documents", docs),
+        ("actions", state.get("actions", [])),
+    ]
+
+    sys_msg, text = prompts.build_messages("post_review", blocks)
+
+    try:
+        decision = llm.structured_answer(
+            messages=[SystemMessage(content=sys_msg), HumanMessage(content=text)],
+            output_model=PostReviewResult,
+            temperature=0.0,
+        )
+    except (openai.APIError, httpx.HTTPError) as e:
+        logger.warning(f"postreview failed: {e}")
+        return {"next": "escalade"}
+
+    needs = decision.needs
+    if needs and not state.get("needs_done"):
+        need = needs[0]
+        state_needs = {need.kind: need.query}
+        after_tools = "agent" if need.kind == "document" else "postreview"
+        return {"next": "outils", "needs": state_needs, "after_tools": after_tools}
+
+    if not decision.documents_cover:
+        return {"next": "escalade", "reason": decision.reason}
+
+    for candidate in decision.candidates:
+        if candidate.established:
+            if decision.advisor_conditions and not any(
+                condition.met == "no" for condition in decision.advisor_conditions
+            ):
+                return {"next": "escalade", "reason": decision.reason}
+            break
+
+    return {"next": "fin"}
+
+
+class TicketResult(BaseModel):
+    category: Literal["billing_dispute", "technical", "termination", "commercial_gesture", "other"]
+    motif: str
+    summary: str
+    actions_taken: list[str]
+    urgency: str
+
+
+def escalade(state: State) -> dict[str, Any]:
+    human_msg = ""
+    for m in reversed(state["messages"]):
+        if m.type == "human":
+            human_msg = m.content
+            break
+
+    blocks = [
+        ("message_client", human_msg),
+        ("contexte", [m.content for m in state["messages"][:-1] if m.type == "human"]),
+        ("faits", state.get("facts", {})),
+        ("actions", state.get("actions", [])),
+    ]
+
+    sys_msg, text = prompts.build_messages("ticket", blocks)
+
+    try:
+        ticket = llm.structured_answer(
+            messages=[SystemMessage(content=sys_msg), HumanMessage(content=text)],
+            output_model=TicketResult,
+            temperature=0.0,
+        )
+    except (openai.APIError, httpx.HTTPError) as e:
+        logger.error(f"ticket creation failed: {e}")
+        ticket = TicketResult(
+            category="other",
+            motif="Transfert suite à une erreur",
+            summary="Le bot n'a pas pu traiter la demande.",
+            actions_taken=[],
+            urgency="normal",
+        )
+
+    summary = f"Motif: {ticket.motif}\nActions: {', '.join(ticket.actions_taken)}\nUrgence: {ticket.urgency}\n\n{ticket.summary}"
+
+    try:
+        api_res = _api_client.create_ticket(category=ticket.category, summary=summary)
+        eta = api_res.get("callback_eta", "")
+        delay = prompts.format_handoff_delay(eta) if eta else ""
+    except (APIError, APIUnavailable) as e:
+        logger.error(f"ticket API failed: {e}")
+        delay = ""
+
+    handoff_blocks = blocks + [("delai", delay)]
+    sys_msg_handoff, text_handoff = prompts.build_messages("handoff_message", handoff_blocks)
+
+    try:
+        handoff_res = llm.create_chat_client(temperature=0.0).invoke(
+            [SystemMessage(content=sys_msg_handoff), HumanMessage(content=text_handoff)]
+        )
+        handoff_msg = handoff_res.content
+    except (openai.APIError, httpx.HTTPError) as e:
+        logger.error(f"handoff message failed: {e}")
+        handoff_msg = "Je transfère votre demande à un conseiller."
+        if delay:
+            handoff_msg += f" {delay}"
+
+    return {"messages": [AIMessage(content=handoff_msg)], "escalated": True, "next": "fin"}
+
+
+def fin(state: State) -> dict[str, Any]:
+    return {
+        "tool_calls": 0,
+        "needs": None,
+        "needs_done": False,
+        "escalated": False,
+        "after_tools": None,
+    }
 
 
 builder = StateGraph(State)
@@ -471,7 +671,9 @@ builder.add_node("fin", fin)
 builder.set_entry_point("precheck")
 builder.add_conditional_edges("precheck", lambda state: state["next"], ["agent", "escalade"])
 builder.add_conditional_edges("agent", lambda state: state["next"], ["outils", "postreview"])
-builder.add_conditional_edges("outils", lambda state: state["next"], ["agent", "postreview"])
+builder.add_conditional_edges(
+    "outils", lambda state: state["next"], ["agent", "postreview", "escalade"]
+)
 builder.add_conditional_edges(
     "postreview", lambda state: state["next"], ["outils", "agent", "escalade", "fin"]
 )
